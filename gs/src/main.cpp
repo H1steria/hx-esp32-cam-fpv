@@ -2904,7 +2904,7 @@ int main(int argc, const char* argv[])
     s_comms.setChannel( s_groundstation_config.wifi_channel );
     s_comms.setTxPower( s_groundstation_config.txPower );
 
-    gpio_buttons_start();
+    //gpio_buttons_start();
 
     int result = run((char **)argv);
 
