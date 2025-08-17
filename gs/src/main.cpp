@@ -1186,10 +1186,55 @@ int run(char* argv[])
         ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
         ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-        ImGui::Begin("fullscreen", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav  | ImGuiWindowFlags_NoFocusOnAppearing);
+        ImGui::Begin("fullscreen", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoNav  | ImGuiWindowFlags_NoFocusOnAppearing);
         {
+            const float control_panel_width = 220.0f;
+            const ImVec2 display_size = ImGui::GetIO().DisplaySize;
 
+            // Child window for Video
+            ImGui::BeginChild("VideoPane", ImVec2(display_size.x - control_panel_width, 0), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+            const float control_panel_width = 220.0f;
+            const ImVec2 display_size = ImGui::GetIO().DisplaySize;
+
+            // Child window for Video + OSD status
+            ImGui::BeginChild("VideoPane", ImVec2(display_size.x - control_panel_width, 0), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+            
             g_osd.draw();
+            ImGui::EndChild();
+
+            ImGui::SameLine();
+
+            // Child window for Controls
+            ImGui::BeginChild("ControlPane", ImVec2(control_panel_width, 0), true);
+            {
+                // State for the toggle button
+                static bool gpio_pin_state = false;
+
+                ImGui::Spacing();
+                ImGui::Text("Controles");
+                ImGui::Separator();
+                ImGui::Spacing();
+
+                // Change button text and color based on state
+                const char* button_text = gpio_pin_state ? "GPIO PIN: ON" : "GPIO PIN: OFF";
+                ImVec4 button_color = gpio_pin_state ? ImVec4(0.2f, 0.7f, 0.2f, 1.0f) : ImVec4(0.8f, 0.2f, 0.2f, 1.0f);
+                ImVec4 hover_color = gpio_pin_state ? ImVec4(0.3f, 0.8f, 0.3f, 1.0f) : ImVec4(0.9f, 0.3f, 0.3f, 1.0f);
+                ImVec4 active_color = gpio_pin_state ? ImVec4(0.1f, 0.6f, 0.1f, 1.0f) : ImVec4(0.7f, 0.1f, 0.1f, 1.0f);
+
+                ImGui::PushStyleColor(ImGuiCol_Button, button_color);
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hover_color);
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, active_color);
+
+                if (ImGui::Button(button_text, ImVec2(-1, 50))) // -1 width = fill available space
+                {
+                    gpio_pin_state = !gpio_pin_state; // Toggle the state
+                    config.dataChannel.gpio_control_btn++; // Increment the counter to notify the ESP32
+                }
+
+                ImGui::PopStyleColor(3);
+            }
+            ImGui::EndChild();
+
 
             {
                 //RC RSSI
@@ -1869,8 +1914,43 @@ int run(char* argv[])
             }
 
         }
-        ImGui::End();
-        ImGui::PopStyleVar(2);
+        ImGui::EndChild();
+
+        ImGui::SameLine();
+
+        // Child window for Controls
+        ImGui::BeginChild("ControlPane", ImVec2(control_panel_width, 0), true);
+        {
+            // State for the toggle button
+            static bool gpio_pin_state = false;
+
+            ImGui::Spacing();
+            ImGui::Text("Controles");
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            // Change button text and color based on state
+            const char* button_text = gpio_pin_state ? "GPIO PIN: ON" : "GPIO PIN: OFF";
+            ImVec4 button_color = gpio_pin_state ? ImVec4(0.2f, 0.7f, 0.2f, 1.0f) : ImVec4(0.8f, 0.2f, 0.2f, 1.0f);
+            ImVec4 hover_color = gpio_pin_state ? ImVec4(0.3f, 0.8f, 0.3f, 1.0f) : ImVec4(0.9f, 0.3f, 0.3f, 1.0f);
+            ImVec4 active_color = gpio_pin_state ? ImVec4(0.1f, 0.6f, 0.1f, 1.0f) : ImVec4(0.7f, 0.1f, 0.1f, 1.0f);
+
+            ImGui::PushStyleColor(ImGuiCol_Button, button_color);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hover_color);
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, active_color);
+
+            if (ImGui::Button(button_text, ImVec2(-1, 50))) // -1 width = fill available space
+            {
+                gpio_pin_state = !gpio_pin_state; // Toggle the state
+                config.dataChannel.gpio_control_btn++; // Increment the counter to notify the ESP32
+            }
+
+            ImGui::PopStyleColor(3);
+        }
+        ImGui::EndChild();
+    }
+    ImGui::End();
+    ImGui::PopStyleVar();
 
         //------------ osd menu
         g_osdMenu.draw(config);
