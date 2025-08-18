@@ -1838,8 +1838,8 @@ int run(char* argv[])
             if (ImGui::Button(button_text, ImVec2(-1, 50))) // -1 width = fill available space
             {
                 gpio_pin_state = !gpio_pin_state; // Toggle the state
-                config.dataChannel.gpio_control_btn++; // Increment the counter to notify the ESP32
             }
+            config.dataChannel.gpio_control_btn = gpio_pin_state;
 
             ImGui::PopStyleColor(3);
         }
