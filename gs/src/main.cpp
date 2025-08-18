@@ -1191,51 +1191,12 @@ int run(char* argv[])
             const float control_panel_width = 220.0f;
             const ImVec2 display_size = ImGui::GetIO().DisplaySize;
 
-            // Child window for Video
-            ImGui::BeginChild("VideoPane", ImVec2(display_size.x - control_panel_width, 0), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-            const float control_panel_width = 220.0f;
-            const ImVec2 display_size = ImGui::GetIO().DisplaySize;
+            // Left panel container
+            ImGui::BeginChild("LeftPanel", ImVec2(display_size.x - control_panel_width, 0), false);
 
-            // Child window for Video + OSD status
-            ImGui::BeginChild("VideoPane", ImVec2(display_size.x - control_panel_width, 0), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-            
             g_osd.draw();
-            ImGui::EndChild();
 
-            ImGui::SameLine();
-
-            // Child window for Controls
-            ImGui::BeginChild("ControlPane", ImVec2(control_panel_width, 0), true);
-            {
-                // State for the toggle button
-                static bool gpio_pin_state = false;
-
-                ImGui::Spacing();
-                ImGui::Text("Controles");
-                ImGui::Separator();
-                ImGui::Spacing();
-
-                // Change button text and color based on state
-                const char* button_text = gpio_pin_state ? "GPIO PIN: ON" : "GPIO PIN: OFF";
-                ImVec4 button_color = gpio_pin_state ? ImVec4(0.2f, 0.7f, 0.2f, 1.0f) : ImVec4(0.8f, 0.2f, 0.2f, 1.0f);
-                ImVec4 hover_color = gpio_pin_state ? ImVec4(0.3f, 0.8f, 0.3f, 1.0f) : ImVec4(0.9f, 0.3f, 0.3f, 1.0f);
-                ImVec4 active_color = gpio_pin_state ? ImVec4(0.1f, 0.6f, 0.1f, 1.0f) : ImVec4(0.7f, 0.1f, 0.1f, 1.0f);
-
-                ImGui::PushStyleColor(ImGuiCol_Button, button_color);
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hover_color);
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive, active_color);
-
-                if (ImGui::Button(button_text, ImVec2(-1, 50))) // -1 width = fill available space
-                {
-                    gpio_pin_state = !gpio_pin_state; // Toggle the state
-                    config.dataChannel.gpio_control_btn++; // Increment the counter to notify the ESP32
-                }
-
-                ImGui::PopStyleColor(3);
-            }
-            ImGui::EndChild();
-
-
+            // Status bar
             {
                 //RC RSSI
                 char buf[32];
@@ -1591,43 +1552,7 @@ int run(char* argv[])
                         ImGui::Text("%.1f,%.1f%%", calcLossRatio(s_last_airStats.outPacketRate, s_last_gs_stats.inPacketCounter[0]),
                             calcLossRatio(s_last_airStats.outPacketRate, s_last_gs_stats.inPacketCounter[1]));
                     }
-/*
-                    {
-                        ImGui::TableNextRow();
-                        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, c );
 
-                        ImGui::TableSetColumnIndex(0);
-                        ImGui::Text("GSExpectedPktRate");
-
-                        ImGui::TableSetColumnIndex(1);
-
-                        ImGui::Text("%d", (s_last_gs_stats.lastPacketIndex - s_last_gs_stats.statsPacketIndex) /12 * config.dataChannel.fec_codec_n);
-                    }
-
-                    {
-                        ImGui::TableNextRow();
-                        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, c );
-
-                        ImGui::TableSetColumnIndex(0);
-                        ImGui::Text("GSUniquePktRate");
-
-                        ImGui::TableSetColumnIndex(1);
-
-                        ImGui::Text("%d", s_last_gs_stats.inUniquePacketCounter);
-                    }
-
-                    {
-                        ImGui::TableNextRow();
-                        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, c );
-
-                        ImGui::TableSetColumnIndex(0);
-                        ImGui::Text("GSDublicatedPktRate");
-
-                        ImGui::TableSetColumnIndex(1);
-
-                        ImGui::Text("%d", s_last_gs_stats.inDublicatedPacketCounter);
-                    }
-*/
                     {
                         ImGui::TableNextRow();
                         ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, c );
@@ -1639,21 +1564,7 @@ int run(char* argv[])
 
                         ImGui::Text("%.1f%%", calcLossRatio((s_last_gs_stats.lastPacketIndex - s_last_gs_stats.statsPacketIndex)/12*config.dataChannel.fec_codec_n, s_last_gs_stats.inUniquePacketCounter));
                     }
-/*
-                    {
-                        ImGui::TableNextRow();
-                        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, c );
 
-                        ImGui::TableSetColumnIndex(0);
-                        ImGui::Text("FECSuccIndex");
-
-                        ImGui::TableSetColumnIndex(1);
-
-                        uint32_t blocksCount = s_last_gs_stats.FECBlocksCounter;
-                        if ( blocksCount == 0 ) blocksCount = 1;
-                        ImGui::Text("%.1f", s_last_gs_stats.FECSuccPacketIndexCounter * 1.0f / blocksCount);
-                    }
-*/
                     {
                         ImGui::TableNextRow();
                         ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, c );
@@ -1719,19 +1630,6 @@ int run(char* argv[])
                         ImGui::TableSetColumnIndex(1);
                         ImGui::Text("%d dbm", s_last_gs_stats.noiseFloorDbm);
                     }
-
-/*
-                    {
-                        ImGui::TableNextRow();
-                        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, c );
-
-                        ImGui::TableSetColumnIndex(0);
-                        ImGui::Text("GS SNR");
-
-                        ImGui::TableSetColumnIndex(1);
-                        ImGui::Text("%d db", -((int)s_last_gs_stats.noiseFloorDbm - s_last_gs_stats.rssiDbm) );
-                    }
-*/
 
                     {
                         ImGui::TableNextRow();
@@ -1913,21 +1811,19 @@ int run(char* argv[])
 
             }
 
-        }
-        ImGui::EndChild();
+            
+        ImGui::EndChild(); // End LeftPanel
 
         ImGui::SameLine();
 
-        // Child window for Controls
+        // Right panel for controls
         ImGui::BeginChild("ControlPane", ImVec2(control_panel_width, 0), true);
         {
             // State for the toggle button
             static bool gpio_pin_state = false;
 
-            ImGui::Spacing();
             ImGui::Text("Controles");
             ImGui::Separator();
-            ImGui::Spacing();
 
             // Change button text and color based on state
             const char* button_text = gpio_pin_state ? "GPIO PIN: ON" : "GPIO PIN: OFF";
@@ -1948,9 +1844,9 @@ int run(char* argv[])
             ImGui::PopStyleColor(3);
         }
         ImGui::EndChild();
-    }
-    ImGui::End();
-    ImGui::PopStyleVar();
+        ImGui::PopStyleVar();
+        }
+        ImGui::End();
 
         //------------ osd menu
         g_osdMenu.draw(config);
