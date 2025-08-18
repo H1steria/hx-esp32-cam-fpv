@@ -41,6 +41,7 @@ uint8_t s_wlan_outgoing_queue_usage = 0;
 static void (*ground2air_config_packet_handler)(Ground2Air_Config_Packet& src) = nullptr;
 static void (*ground2air_connect_packet_handler)(Ground2Air_Config_Packet& src) = nullptr;
 static void (*ground2air_data_packet_handler)(Ground2Air_Data_Packet& src) = nullptr;
+static void (*ground2air_control_packet_handler)(Ground2Air_Control_Packet& src) = nullptr;
 WIFI_Rate s_wlan_rate = s_ground2air_config_packet.dataChannel.wifi_rate;
 float s_wlan_power_dBm = s_ground2air_config_packet.dataChannel.wifi_power;
 
@@ -63,6 +64,13 @@ void set_ground2air_connect_packet_handler(void (*handler)(Ground2Air_Config_Pac
 void set_ground2air_data_packet_handler(void (*handler)(Ground2Air_Data_Packet& src))
 {
     ground2air_data_packet_handler=handler;
+}
+
+//===========================================================================================
+//===========================================================================================
+void set_ground2air_control_packet_handler(void (*handler)(Ground2Air_Control_Packet& src))
+{
+    ground2air_control_packet_handler = handler;
 }
 
 
@@ -322,6 +330,13 @@ IRAM_ATTR static void wifi_rx_proc(void *)
                                     if (ground2air_connect_packet_handler)
                                     {
                                         ground2air_connect_packet_handler(*(Ground2Air_Config_Packet*)packet.ptr);
+                                    }
+                                break;
+
+                                case Ground2Air_Header::Type::Control:
+                                    if (ground2air_control_packet_handler)
+                                    {
+                                        ground2air_control_packet_handler(*(Ground2Air_Control_Packet*)packet.ptr);
                                     }
                                 break;
 

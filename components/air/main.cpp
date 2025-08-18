@@ -1405,8 +1405,6 @@ static void handle_ground2air_config_packetEx1(Ground2Air_Config_Packet& src)
     int64_t t = esp_timer_get_time();
     s_last_seen_config_packet = t;
     
-    LOG("Config packet received - gpio_control_btn: %d\n", src.dataChannel.gpio_control_btn);
-
     Ground2Air_Config_Packet& dst = s_ground2air_config_packet;
 
     if ( processSetting( "Wifi rate", (int)dst.dataChannel.wifi_rate, (int)src.dataChannel.wifi_rate, "rate") )
@@ -1451,16 +1449,6 @@ static void handle_ground2air_config_packetEx1(Ground2Air_Config_Packet& src)
             //dst.dataChannel.air_record_btn = src.dataChannel.air_record_btn;
         }
 
-#ifdef GPIO_CONTROL_PIN
-        {
-            bool new_state = (src.dataChannel.gpio_control_btn != 0);
-            if (s_gpio_control_state != new_state)
-            {
-                set_gpio_control_pin(new_state);
-                LOG("GPIO control state changed to: %s\n", new_state ? "ON" : "OFF");
-            }
-        }
-#endif
 
 
 
@@ -1772,6 +1760,24 @@ IRAM_ATTR static void handle_ground2air_connect_packet(Ground2Air_Config_Packet&
 }
 
 static void init_camera();
+
+//===========================================================================================
+//===========================================================================================
+__attribute__((optimize("Os")))
+IRAM_ATTR static void handle_ground2air_control_packet(Ground2Air_Control_Packet& src)
+{
+#ifdef GPIO_CONTROL_PIN
+    if ( s_restart_time == 0 )
+    {
+        bool new_state = (src.gpio_control_btn != 0);
+        if (s_gpio_control_state != new_state)
+        {
+            set_gpio_control_pin(new_state);
+            LOG("GPIO control state changed to: %s\n", new_state ? "ON" : "OFF");
+        }
+    }
+#endif
+}
 
 //===========================================================================================
 //===========================================================================================
@@ -3119,6 +3125,7 @@ extern "C" void app_main()
     set_ground2air_config_packet_handler(handle_ground2air_config_packet);
     set_ground2air_connect_packet_handler(handle_ground2air_connect_packet);
     set_ground2air_data_packet_handler(handle_ground2air_data_packet);
+    set_ground2air_control_packet_handler(handle_ground2air_control_packet);
 
     LOG("WIFI channel: %d\n", s_ground2air_config_packet.dataChannel.wifi_channel );
 
