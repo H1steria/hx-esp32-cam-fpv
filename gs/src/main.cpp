@@ -34,12 +34,6 @@
 
 #include "utils.h"
 
-#ifdef TEST_LATENCY
-extern "C"
-{
-#include "pigpio.h"
-}
-#endif
 /*
 
 Changes on the PI:
@@ -236,10 +230,6 @@ static const Resolution resolutionsList[] = { Resolution::VGA16, Resolution::VGA
 std::unique_ptr<IHAL> s_hal;
 Video_Decoder s_decoder;
 
-#ifdef USE_MAVLINK
-int fdUART = -1;
-std::string serialPortName = isRadxaZero3() ? "/dev/ttyS3" : "/dev/serial0";
-#endif
 
 /* This prints an "Assertion failed" message and aborts.  */
 void __assert_fail(const char* __assertion, const char* __file, unsigned int __line, const char* __function)
@@ -258,10 +248,6 @@ static std::mutex s_ground2air_data_packet_mutex;
 static Ground2Air_Data_Packet s_ground2air_data_packet;
 int s_tlm_size = 0;
 
-#ifdef TEST_LATENCY
-static uint32_t s_test_latency_gpio_value = 0;
-static Clock::time_point s_test_latency_gpio_last_tp = Clock::now();
-#endif
 
 TGroundstationConfig s_groundstation_config;
 
@@ -566,88 +552,6 @@ static void comms_thread_proc()
 
         g_CPUTemp.process();
 
-#ifdef USE_MAVLINK
-        if (fdUART != -1)
-        {
-            std::lock_guard<std::mutex> lg(s_ground2air_data_packet_mutex);
-            auto& data = s_ground2air_data_packet;
-
-            int frb = GROUND2AIR_DATA_MAX_PAYLOAD_SIZE - s_tlm_size;
-            int n = read(fdUART, &(data.payload[s_tlm_size]), frb);
-
-            bool gotRCPacket = false;
-
-            if ( n > 0 )
-            {
-                uint8_t* dPtr = (uint8_t*)(&data.payload[s_tlm_size]);
-                for ( int i = 0; i < n; i++ )
-                {
-                    mavlinkParserIn.processByte(*dPtr++);
-                    if ( mavlinkParserIn.gotPacket())
-                    {
-                        if ( mavlinkParserIn.getMessageId() == HX_MAXLINK_RC_CHANNELS_OVERRIDE)
-                        {
-                            //const HXMAVLinkRCChannelsOverride* msg = mavlinkParserIn.getMsg<HXMAVLinkRCChannelsOverride>();
-                            //LOG("%d %d %d %d\n", msg->chan1_raw, msg->chan2_raw, msg->chan3_raw, msg->chan4_raw);
-                            Clock::time_point t = Clock::now();
-                            int dt = std::chrono::duration_cast<std::chrono::milliseconds>(t - s_last_rc_command).count();
-                            s_last_rc_command = t;
-                            s_gs_stats.RCPeriodMax = std::max(s_gs_stats.RCPeriodMax, dt);
-                            gotRCPacket = true;
-                        }
-                    }
-                }
-
-                s_tlm_size += n;
-                in_tlm_size += n;
-            }
-
-            if ( 
-                (s_tlm_size == GROUND2AIR_DATA_MAX_PAYLOAD_SIZE) ||
-                gotRCPacket ||
-                ( 
-                    ( (s_tlm_size > 0 ) && (Clock::now() - last_data_sent_tp) >= std::chrono::milliseconds(100)) 
-                )
-            )
-            {
-                data.type = Ground2Air_Header::Type::Telemetry;
-                data.size = sizeof(Ground2Air_Header) + s_tlm_size;
-                data.airDeviceId = s_connected_air_device_id;
-                data.gsDeviceId = s_groundstation_config.deviceId;
-                data.crc = 0;  //calculate cc with crc filed = 0
-                data.crc = crc8(0, &data, data.size); 
-                if ( s_got_config_packet ) 
-                {
-                    s_comms.send(&data, data.size, true);
-                    sent_count++;
-                }
-                last_data_sent_tp = Clock::now();
-                s_tlm_size = 0;
-            }
-        }
-#endif
-
-#ifdef TEST_LATENCY
-        if (s_test_latency_gpio_value == 0 && Clock::now() - s_test_latency_gpio_last_tp >= std::chrono::milliseconds(200))
-        {
-            s_test_latency_gpio_value = 1;
-            gpioWrite(17, s_test_latency_gpio_value);
-            s_test_latency_gpio_last_tp = Clock::now();
-#   ifdef TEST_DISPLAY_LATENCY
-            s_decoder.inject_test_data(s_test_latency_gpio_value);
-#   endif
-        }
-        if (s_test_latency_gpio_value != 0 && Clock::now() - s_test_latency_gpio_last_tp >= std::chrono::milliseconds(50))
-        {
-            s_test_latency_gpio_value = 0;
-            gpioWrite(17, s_test_latency_gpio_value);
-            s_test_latency_gpio_last_tp = Clock::now();
-#   ifdef TEST_DISPLAY_LATENCY
-            s_decoder.inject_test_data(s_test_latency_gpio_value);
-#   endif
-        }
-#endif        
-
 #ifdef TEST_DISPLAY_LATENCY
         std::this_thread::yield();
 
@@ -897,41 +801,7 @@ static void comms_thread_proc()
                 }
 
             }
-            else if (air2ground_header.type == Air2Ground_Header::Type::Telemetry)
-            {
-#ifdef USE_MAVLINK
-              if (fdUART != -1)
-              {
-                if (packet_size > rx_data.size)
-                {
-                    LOGE("Telemetry frame: data too big: {} > {}", packet_size, rx_data.size);
-                    break;
-                }
-                if (packet_size < (sizeof(Air2Ground_Data_Packet) + 1))
-                {
-                    LOGE("Telemetry frame: data too small: {} < {}", packet_size, sizeof(Air2Ground_Data_Packet) + 1);
-                    break;
-                }
 
-                size_t payload_size = packet_size - sizeof(Air2Ground_Data_Packet);
-                Air2Ground_Data_Packet& air2ground_data_packet = *(Air2Ground_Data_Packet*)rx_data.data.data();
-                uint8_t crc = air2ground_data_packet.crc;
-                air2ground_data_packet.crc = 0;
-                uint8_t computed_crc = crc8(0, rx_data.data.data(), sizeof(Air2Ground_Data_Packet));
-                if (crc != computed_crc)
-                {
-                    LOGE("Telemetry frame: crc mismatch {}: {} != {}", payload_size, crc, computed_crc);
-                    break;
-                }
-
-                total_data10 += rx_data.size;
-                //LOGI("OK Telemetry frame {} - CRC OK {}. {}", payload_size, crc, rx_queue.size());
-
-                write(fdUART, ((uint8_t*)&air2ground_data_packet) + sizeof(Air2Ground_Data_Packet), payload_size);
-                out_tlm_size += payload_size;
-              }
-#endif
-            }
             else if (air2ground_header.type == Air2Ground_Header::Type::OSD)
             {
                 if (packet_size > rx_data.size)
@@ -1229,7 +1099,6 @@ int run(char* argv[])
                         s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
                     }
                 }
-                config.dataChannel.gpio_control_btn = gpio_pin_state;
 
                 ImGui::PopStyleColor(3);
             }
@@ -2296,56 +2165,6 @@ int run(char* argv[])
     return 0;
 }
 
-#ifdef USE_MAVLINK
-//===================================================================================
-//===================================================================================
-bool init_uart()
-{
-    fdUART = open(serialPortName.c_str(), O_RDWR);
-    if (fdUART == -1)
-    {
-      printf("Warning: Can not open serial port %s. Telemetry will not be available.\n", serialPortName.c_str());
-      return false;
-    }
-
-    struct termios tty;
-    if(tcgetattr(fdUART, &tty) != 0) 
-    {
-      printf("Error %i from tcgetattr: %s\n", errno, strerror(errno));
-      return false;
-    }
-
-    tty.c_cflag &= ~PARENB;
-    tty.c_cflag &= ~CSTOPB;
-    tty.c_cflag &= ~CSIZE;
-    tty.c_cflag |= CS8;
-    tty.c_cflag &= ~CRTSCTS;
-    tty.c_cflag |= CREAD | CLOCAL;
-    tty.c_lflag &= ~ICANON;
-    tty.c_lflag &= ~ECHO;
-    tty.c_lflag &= ~ECHOE;
-    tty.c_lflag &= ~ECHONL;
-    tty.c_lflag &= ~ISIG;
-    tty.c_iflag &= ~(IXON | IXOFF | IXANY);
-    tty.c_iflag &= ~(IGNBRK|BRKINT|PARMRK|ISTRIP|INLCR|IGNCR|ICRNL);
-    tty.c_oflag &= ~OPOST;
-    tty.c_oflag &= ~ONLCR;
-    tty.c_cc[VTIME] = 0;
-    tty.c_cc[VMIN] = 0;
-    
-    cfsetispeed(&tty, B115200);
-    cfsetospeed(&tty, B115200);
-  
-    if (tcsetattr(fdUART, TCSANOW, &tty) != 0) 
-    {
-      printf("Error %i from tcsetattr: %s\n", errno, strerror(errno));
-      return false;
-    }
-
-    return true;
-}
-#endif 
-
 //===================================================================================
 //===================================================================================
 void saveGroundStationConfig()
@@ -2725,14 +2544,7 @@ int main(int argc, const char* argv[])
             tx_descriptor.interface = next; 
             i++;
         }
-#ifdef USE_MAVLINK
-        else if(temp=="-serial")
-        {
-            check_argval("serial");
-            serialPortName = next; 
-            i++;
-        }
-#endif
+
         else if(temp=="-p")
         {
             check_argval_int("port");
@@ -2800,11 +2612,6 @@ int main(int argc, const char* argv[])
             printf("-fullscreen <1/0>, default: 1\n");
             printf("-vsync <1/0>, default: 1\n");
             printf("-sm <1/0>, skip setting monitor mode with pcap, default: 1\n");
-#ifdef USE_MAVLINK
-            printf("-serial <serial_port>, serial port for telemetry, default: ");
-            printf(serialPortName.c_str());
-            printf("\n");
-#endif            
             printf("-help\n");
             return 0;
         }
@@ -2853,10 +2660,6 @@ int main(int argc, const char* argv[])
     tx_descriptor.coding_n = 3;
     tx_descriptor.mtu = GROUND2AIR_DATA_MAX_SIZE;
 
-#ifdef USE_MAVLINK
-    init_uart();
-#endif
-
 #ifdef WRITE_RAW_MJPEG_STREAM
 #else
     prepAviBuffers();
@@ -2877,10 +2680,6 @@ int main(int argc, const char* argv[])
 
     if (!s_hal->init())
         return -1;
-
-#ifdef TEST_LATENCY
-    gpioSetMode(17, PI_OUTPUT);
-#endif
 
     if (!s_comms.init(rx_descriptor, tx_descriptor))
     {
