@@ -124,3 +124,11 @@ graph TD
         H --> I{Compara valor de profile1_btn con el anterior};
         I -- Si ha cambiado --> J[Ejecuta Acción del Perfil 1];
     end
+
+
+
+seccion de manejo de teclas en la estacion:
+if ( ImGui::IsKeyPressed(ImGuiKey_S))
+{
+    s_groundstation_config.stats = !s_groundstation_config.stats;
+}

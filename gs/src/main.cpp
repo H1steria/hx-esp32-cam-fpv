@@ -1191,7 +1191,52 @@ int run(char* argv[])
             const float control_panel_width = 220.0f;
             const ImVec2 display_size = ImGui::GetIO().DisplaySize;
 
+            // Right panel for controls
+            ImGui::SetCursorPosX(display_size.x - control_panel_width);
+            ImGui::BeginChild("ControlPane", ImVec2(control_panel_width, 0), true);
+            {
+                // State for the toggle button
+                static bool gpio_pin_state = false;
+
+                ImGui::Text("Controles");
+                ImGui::Separator();
+
+                // Change button text and color based on state
+                const char* button_text = gpio_pin_state ? "GPIO PIN: ON" : "GPIO PIN: OFF";
+                ImVec4 button_color = gpio_pin_state ? ImVec4(0.2f, 0.7f, 0.2f, 1.0f) : ImVec4(0.8f, 0.2f, 0.2f, 1.0f);
+                ImVec4 hover_color = gpio_pin_state ? ImVec4(0.3f, 0.8f, 0.3f, 1.0f) : ImVec4(0.9f, 0.3f, 0.3f, 1.0f);
+                ImVec4 active_color = gpio_pin_state ? ImVec4(0.1f, 0.6f, 0.1f, 1.0f) : ImVec4(0.7f, 0.1f, 0.1f, 1.0f);
+
+                ImGui::PushStyleColor(ImGuiCol_Button, button_color);
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hover_color);
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, active_color);
+
+                if (ImGui::Button(button_text, ImVec2(-1, 50))) // -1 width = fill available space
+                {
+                    gpio_pin_state = !gpio_pin_state; // Toggle the state
+                    
+                    if ( s_connected_air_device_id != 0 )
+                    {
+                        // Immediately send a control packet with the updated state
+                        Ground2Air_Control_Packet packet_to_send;
+                        packet_to_send.gpio_control_btn = gpio_pin_state;
+                        packet_to_send.type = Ground2Air_Header::Type::Control;
+                        packet_to_send.size = sizeof(packet_to_send);
+                        packet_to_send.airDeviceId = s_connected_air_device_id;
+                        packet_to_send.gsDeviceId = s_groundstation_config.deviceId;
+                        packet_to_send.crc = 0;
+                        packet_to_send.crc = crc8(0, &packet_to_send, sizeof(packet_to_send));
+                        s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
+                    }
+                }
+                config.dataChannel.gpio_control_btn = gpio_pin_state;
+
+                ImGui::PopStyleColor(3);
+            }
+            ImGui::EndChild();
+
             // Left panel container
+            ImGui::SetCursorPos(ImVec2(0,0));
             ImGui::BeginChild("LeftPanel", ImVec2(display_size.x - control_panel_width, 0), false);
 
             g_osd.draw();
@@ -1813,37 +1858,6 @@ int run(char* argv[])
 
             
         ImGui::EndChild(); // End LeftPanel
-
-        ImGui::SameLine();
-
-        // Right panel for controls
-        ImGui::BeginChild("ControlPane", ImVec2(control_panel_width, 0), true);
-        {
-            // State for the toggle button
-            static bool gpio_pin_state = false;
-
-            ImGui::Text("Controles");
-            ImGui::Separator();
-
-            // Change button text and color based on state
-            const char* button_text = gpio_pin_state ? "GPIO PIN: ON" : "GPIO PIN: OFF";
-            ImVec4 button_color = gpio_pin_state ? ImVec4(0.2f, 0.7f, 0.2f, 1.0f) : ImVec4(0.8f, 0.2f, 0.2f, 1.0f);
-            ImVec4 hover_color = gpio_pin_state ? ImVec4(0.3f, 0.8f, 0.3f, 1.0f) : ImVec4(0.9f, 0.3f, 0.3f, 1.0f);
-            ImVec4 active_color = gpio_pin_state ? ImVec4(0.1f, 0.6f, 0.1f, 1.0f) : ImVec4(0.7f, 0.1f, 0.1f, 1.0f);
-
-            ImGui::PushStyleColor(ImGuiCol_Button, button_color);
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hover_color);
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, active_color);
-
-            if (ImGui::Button(button_text, ImVec2(-1, 50))) // -1 width = fill available space
-            {
-                gpio_pin_state = !gpio_pin_state; // Toggle the state
-            }
-            config.dataChannel.gpio_control_btn = gpio_pin_state;
-
-            ImGui::PopStyleColor(3);
-        }
-        ImGui::EndChild();
         ImGui::PopStyleVar();
         }
         ImGui::End();

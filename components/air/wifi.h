@@ -47,6 +47,7 @@ void setup_wifi(WIFI_Rate wifi_rate,uint8_t chn,float power_dbm,void (*packet_re
 void set_ground2air_config_packet_handler(void (*handler)(Ground2Air_Config_Packet& src));
 void set_ground2air_connect_packet_handler(void (*handler)(Ground2Air_Config_Packet& src));
 void set_ground2air_data_packet_handler(void (*handler)(Ground2Air_Data_Packet& src));
+void set_ground2air_control_packet_handler(void (*handler)(Ground2Air_Control_Packet& src));
 esp_err_t set_wifi_fixed_rate(WIFI_Rate value);
 esp_err_t set_wlan_power_dBm(float dBm);
 void setup_wifi_file_server(void);

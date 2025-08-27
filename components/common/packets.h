@@ -138,7 +138,6 @@ struct DataChannelConfig
     uint8_t air_record_btn = 0; //incremented each time button is pressed on gs
     uint8_t profile1_btn = 0; //incremented each time button is pressed on gs
     uint8_t profile2_btn = 0; //incremented each time button is pressed on gs
-    uint8_t gpio_control_btn = 0;
 
     uint8_t cameraStopChannel : 5;// = 0;  //0 - none
     uint8_t autostartRecord : 1;// = 1;
@@ -154,10 +153,11 @@ struct Ground2Air_Header
     {
         Telemetry,
         Config,
-        Connect  //Packet is sent to initialize connection. GS will send this packet instead of Config Packet untill any packet with GS id is received from Air unit
+        Connect,  //Packet is sent to initialize connection. GS will send this packet instead of Config Packet untill any packet with GS id is received from Air unit
+        Control
     };
 
-    Type type = Type::Telemetry; 
+    Type type = Type::Telemetry;
     uint32_t size = 0;
     uint8_t crc = 0;
     uint8_t packet_version = PACKET_VERSION;
@@ -192,6 +192,14 @@ struct Ground2Air_Config_Packet : Ground2Air_Header
     DataChannelConfig dataChannel;
 };
 static_assert(sizeof(Ground2Air_Config_Packet) <= GROUND2AIR_DATA_MAX_SIZE, "");
+
+//======================================================
+//======================================================
+struct Ground2Air_Control_Packet : Ground2Air_Header
+{
+    uint8_t gpio_control_btn;
+};
+static_assert(sizeof(Ground2Air_Control_Packet) <= GROUND2AIR_DATA_MAX_SIZE, "");
 
 //======================================================
 //======================================================
