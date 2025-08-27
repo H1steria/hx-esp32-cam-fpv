@@ -1089,7 +1089,7 @@ int run(char* argv[])
                     {
                         // Immediately send a control packet with the updated state
                         Ground2Air_Control_Packet packet_to_send;
-                        packet_to_send.gpio_control_btn = gpio_pin_state;
+                        packet_to_send.command = gpio_pin_state ? CMD_FLASH : CMD_NONE;
                         packet_to_send.type = Ground2Air_Header::Type::Control;
                         packet_to_send.size = sizeof(packet_to_send);
                         packet_to_send.airDeviceId = s_connected_air_device_id;
@@ -2023,14 +2023,68 @@ int run(char* argv[])
             ImGui::End();
         } //debug window
         
-        if ( ImGui::IsKeyPressed(ImGuiKey_D) || ImGui::IsKeyPressed(ImGuiKey_MouseMiddle))
+        if ( ImGui::IsKeyPressed(ImGuiKey_O) || ImGui::IsKeyPressed(ImGuiKey_MouseMiddle))
         {
             s_debugWindowVisisble = !s_debugWindowVisisble;
         }
 
-        if ( ImGui::IsKeyPressed(ImGuiKey_S))
+        if ( ImGui::IsKeyPressed(ImGuiKey_P))
         {
             s_groundstation_config.stats = !s_groundstation_config.stats;
+        }
+
+        // Handle movement keys (W, A, S, D) and flash key (F)
+        if ( ImGui::IsKeyPressed(ImGuiKey_W) && s_connected_air_device_id != 0 )
+        {
+            // Send forward command
+            Ground2Air_Control_Packet packet_to_send;
+            packet_to_send.command = CMD_FORWARD;
+            packet_to_send.type = Ground2Air_Header::Type::Control;
+            packet_to_send.size = sizeof(packet_to_send);
+            packet_to_send.airDeviceId = s_connected_air_device_id;
+            packet_to_send.gsDeviceId = s_groundstation_config.deviceId;
+            packet_to_send.crc = 0;
+            packet_to_send.crc = crc8(0, &packet_to_send, sizeof(packet_to_send));
+            s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
+        }
+        else if ( ImGui::IsKeyPressed(ImGuiKey_S) && s_connected_air_device_id != 0 )
+        {
+            // Send backward command
+            Ground2Air_Control_Packet packet_to_send;
+            packet_to_send.command = CMD_BACKWARD;
+            packet_to_send.type = Ground2Air_Header::Type::Control;
+            packet_to_send.size = sizeof(packet_to_send);
+            packet_to_send.airDeviceId = s_connected_air_device_id;
+            packet_to_send.gsDeviceId = s_groundstation_config.deviceId;
+            packet_to_send.crc = 0;
+            packet_to_send.crc = crc8(0, &packet_to_send, sizeof(packet_to_send));
+            s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
+        }
+        else if ( ImGui::IsKeyPressed(ImGuiKey_A) && s_connected_air_device_id != 0 )
+        {
+            // Send left command
+            Ground2Air_Control_Packet packet_to_send;
+            packet_to_send.command = CMD_LEFT;
+            packet_to_send.type = Ground2Air_Header::Type::Control;
+            packet_to_send.size = sizeof(packet_to_send);
+            packet_to_send.airDeviceId = s_connected_air_device_id;
+            packet_to_send.gsDeviceId = s_groundstation_config.deviceId;
+            packet_to_send.crc = 0;
+            packet_to_send.crc = crc8(0, &packet_to_send, sizeof(packet_to_send));
+            s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
+        }
+        else if ( ImGui::IsKeyPressed(ImGuiKey_D) && s_connected_air_device_id != 0 )
+        {
+            // Send right command
+            Ground2Air_Control_Packet packet_to_send;
+            packet_to_send.command = CMD_RIGHT;
+            packet_to_send.type = Ground2Air_Header::Type::Control;
+            packet_to_send.size = sizeof(packet_to_send);
+            packet_to_send.airDeviceId = s_connected_air_device_id;
+            packet_to_send.gsDeviceId = s_groundstation_config.deviceId;
+            packet_to_send.crc = 0;
+            packet_to_send.crc = crc8(0, &packet_to_send, sizeof(packet_to_send));
+            s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
         }
 
         bool resetRes = false;

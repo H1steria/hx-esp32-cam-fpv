@@ -27,6 +27,7 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "driver/uart.h"
+#include "driver/i2c.h"
 #include <unistd.h>
 #include <fcntl.h>
 #include "esp_random.h"
@@ -148,6 +149,67 @@ HXMavlinkParser mavlinkParserIn(true);
 #ifdef GPIO_CONTROL_PIN
 static bool s_gpio_control_state = false;
 #endif
+
+static bool s_i2c_initialized = false;
+
+//=============================================================================================
+//=============================================================================================
+void initialize_i2c()
+{
+    if (s_i2c_initialized) return;
+
+    i2c_config_t conf;
+    conf.mode = I2C_MODE_MASTER;
+    conf.sda_io_num = I2C_SDA_PIN;
+    conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
+    conf.scl_io_num = I2C_SCL_PIN;
+    conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
+    conf.master.clk_speed = I2C_MASTER_FREQ_HZ;
+    conf.clk_flags = 0;  // Use default clock flags
+
+    esp_err_t err = i2c_param_config(I2C_MASTER_NUM, &conf);
+    if (err != ESP_OK) {
+        LOG("Failed to configure I2C parameters: %d\n", err);
+        return;
+    }
+
+    err = i2c_driver_install(I2C_MASTER_NUM, conf.mode, I2C_MASTER_RX_BUF_DISABLE, I2C_MASTER_TX_BUF_DISABLE, 0);
+    if (err != ESP_OK) {
+        LOG("Failed to install I2C driver: %d\n", err);
+        return;
+    }
+
+    s_i2c_initialized = true;
+    LOG("I2C initialized on SDA: %d, SCL: %d\n", I2C_SDA_PIN, I2C_SCL_PIN);
+}
+
+//=============================================================================================
+//=============================================================================================
+void send_i2c_command(uint8_t command)
+{
+    if (!s_i2c_initialized) {
+        initialize_i2c();
+        if (!s_i2c_initialized) {
+            LOG("Failed to initialize I2C\n");
+            return;
+        }
+    }
+
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (I2C_SLAVE_ADDR << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_write_byte(cmd, command, true);
+    i2c_master_stop(cmd);
+    
+    esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, 1000 / portTICK_RATE_MS);
+    i2c_cmd_link_delete(cmd);
+    
+    if (ret == ESP_OK) {
+        LOG("I2C command %d sent successfully\n", command);
+    } else {
+        LOG("Failed to send I2C command %d, error: %d\n", command, ret);
+    }
+}
 
 //=============================================================================================
 //=============================================================================================
@@ -764,17 +826,48 @@ static void init_camera();
 __attribute__((optimize("Os")))
 IRAM_ATTR static void handle_ground2air_control_packet(Ground2Air_Control_Packet& src)
 {
-#ifdef GPIO_CONTROL_PIN
-    if ( s_restart_time == 0 )
+    // Handle flash command (previously gpio_control_btn)
+    #ifdef GPIO_CONTROL_PIN
+    if (s_restart_time == 0)
     {
-        bool new_state = (src.gpio_control_btn != 0);
-        if (s_gpio_control_state != new_state)
+        bool new_flash_state = (src.command == I2C_CMD_FLASH); // Command 5 is flash
+        if (s_gpio_control_state != new_flash_state)
         {
-            set_gpio_control_pin(new_state);
-            LOG("GPIO control state changed to: %s\n", new_state ? "ON" : "OFF");
+            set_gpio_control_pin(new_flash_state);
+            LOG("Flash state changed to: %s\n", new_flash_state ? "ON" : "OFF");
         }
     }
-#endif
+    #endif
+
+    // Handle movement commands and retransmit via I2C
+    if (s_restart_time == 0)
+    {
+        switch (src.command)
+        {
+            case I2C_CMD_FORWARD: // Forward
+                send_i2c_command(I2C_CMD_FORWARD);
+                LOG("Forward command sent via I2C\n");
+                break;
+            case I2C_CMD_BACKWARD: // Backward
+                send_i2c_command(I2C_CMD_BACKWARD);
+                LOG("Backward command sent via I2C\n");
+                break;
+            case I2C_CMD_RIGHT: // Right
+                send_i2c_command(I2C_CMD_RIGHT);
+                LOG("Right command sent via I2C\n");
+                break;
+            case I2C_CMD_LEFT: // Left
+                send_i2c_command(I2C_CMD_LEFT);
+                LOG("Left command sent via I2C\n");
+                break;
+            case I2C_CMD_FLASH: // Flash
+                // Already handled above
+                break;
+            default:
+                LOG("Unknown command received: %d\n", src.command);
+                break;
+        }
+    }
 }
 
 //===========================================================================================

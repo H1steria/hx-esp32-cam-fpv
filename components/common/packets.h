@@ -197,7 +197,7 @@ static_assert(sizeof(Ground2Air_Config_Packet) <= GROUND2AIR_DATA_MAX_SIZE, "");
 //======================================================
 struct Ground2Air_Control_Packet : Ground2Air_Header
 {
-    uint8_t gpio_control_btn;
+    uint8_t command; // 0=none, 1=forward, 2=backward, 3=right, 4=left, 5=flash
 };
 static_assert(sizeof(Ground2Air_Control_Packet) <= GROUND2AIR_DATA_MAX_SIZE, "");
 
@@ -335,4 +335,3 @@ struct Air2Ground_OSD_Packet : Air2Ground_Header
 static_assert(sizeof(Air2Ground_OSD_Packet) <= AIR2GROUND_MTU, "");
 
 #pragma pack(pop)
-
