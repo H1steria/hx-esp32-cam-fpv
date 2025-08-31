@@ -1,68 +1,77 @@
-#include <Arduino.h>
-#include <Wire.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_log.h"
+#include "driver/gpio.h"
+#include "i2c_handler.h"
+#include "motor.h"
 
-// Definiciones de comandos I2C
+// I2C Command Definitions from components/air/main.h
 #define I2C_CMD_FORWARD 1
 #define I2C_CMD_BACKWARD 2
 #define I2C_CMD_RIGHT 3
 #define I2C_CMD_LEFT 4
 #define I2C_CMD_FLASH 5
 
-// Dirección I2C del esclavo (debe coincidir con la del maestro)
-#define I2C_SLAVE_ADDR 0x08
+static const char *TAG = "MAIN";
 
-void setup() {
-  // Inicializar comunicación serial
-  Serial.begin(115200);
-  Serial.println("I2C Slave Iniciado");
-  
-  // Inicializar comunicación I2C
-  Wire.begin(I2C_SLAVE_ADDR);
-  Wire.onReceive(receiveEvent);
-  
-  Serial.println("Esperando comandos I2C...");
-}
+// Motor pins configuration
+#define IN1_PIN GPIO_NUM_14
+#define IN2_PIN GPIO_NUM_27
+#define IN3_PIN GPIO_NUM_26
+#define IN4_PIN GPIO_NUM_25
+#define ENA_PIN GPIO_NUM_33
+#define ENB_PIN GPIO_NUM_32
 
-void loop() {
-  // El loop puede estar vacío ya que la comunicación I2C es por interrupciones
-  delay(100);
-}
-
-// Función que se ejecuta cuando se recibe datos por I2C
-void receiveEvent(int howMany) {
-  while (Wire.available()) {
-    byte command = Wire.read(); // Leer el comando
-    
-    switch (command) {
-      case I2C_CMD_FORWARD:
-        Serial.println("Comando recibido: FORWARD");
-        // Aquí puedes añadir el código para mover el robot hacia adelante
-        break;
-        
-      case I2C_CMD_BACKWARD:
-        Serial.println("Comando recibido: BACKWARD");
-        // Aquí puedes añadir el código para mover el robot hacia atrás
-        break;
-        
-      case I2C_CMD_RIGHT:
-        Serial.println("Comando recibido: RIGHT");
-        // Aquí puedes añadir el código para girar el robot a la derecha
-        break;
-        
-      case I2C_CMD_LEFT:
-        Serial.println("Comando recibido: LEFT");
-        // Aquí puedes añadir el código para girar el robot a la izquierda
-        break;
-        
-      case I2C_CMD_FLASH:
-        Serial.println("Comando recibido: FLASH");
-        // Aquí puedes añadir el código para activar el flash
-        break;
-        
-      default:
-        Serial.print("Comando desconocido recibido: ");
-        Serial.println(command);
-        break;
+extern "C" void app_main() {    
+    // Inicializar I2C Slave
+    if (init_i2c_slave() != ESP_OK) {
+        ESP_LOGE(TAG, "Error inicializando I2C Slave");
+        return;
     }
-  }
+    
+    // Initialize motor controller
+    Motor motor(IN1_PIN, IN2_PIN, IN3_PIN, IN4_PIN, ENA_PIN, ENB_PIN);
+    
+    ESP_LOGI(TAG, "Sistema iniciado - Esperando comandos I2C");
+    
+    // Process I2C commands
+    while (1) {
+        // Leer datos del master (operación de escritura del master)
+        int size = i2c_slave_read_buffer(I2C_SLAVE_PORT, receivedData, BUF_SIZE, pdMS_TO_TICKS(100));
+        
+        if (size > 0) {
+            ESP_LOGI(TAG, "Datos recibidos (%d bytes): ", size);
+            
+            // Process each received byte as a command
+            for (int i = 0; i < size; i++) {
+                ESP_LOGI(TAG, "Comando recibido: 0x%02X", receivedData[i]);
+                
+                switch (receivedData[i]) {
+                    case I2C_CMD_FORWARD:
+                        motor.forward();
+                        break;
+                    case I2C_CMD_BACKWARD:
+                        motor.backward();
+                        break;
+                    case I2C_CMD_RIGHT:
+                        motor.right();
+                        break;
+                    case I2C_CMD_LEFT:
+                        motor.left();
+                        break;
+                    case I2C_CMD_FLASH:
+                        // Flash command - not implemented for motor control
+                        ESP_LOGI(TAG, "Comando FLASH recibido - sin acción en motores");
+                        break;
+                    default:
+                        // Unknown command - stop motors
+                        motor.stop();
+                        ESP_LOGW(TAG, "Comando desconocido: 0x%02X - deteniendo motores", receivedData[i]);
+                        break;
+                }
+            }
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
 }

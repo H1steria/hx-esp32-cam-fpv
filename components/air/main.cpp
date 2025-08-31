@@ -109,8 +109,6 @@ uint16_t s_framesCounter = 0;
 
 static bool s_initialized = false;
 
-static uint32_t s_last_rc_packet_tp = 0;
-
 static uint16_t s_air_device_id;
 static uint16_t s_connected_gs_device_id = 0;
 
@@ -154,37 +152,51 @@ static bool s_i2c_initialized = false;
 
 //=============================================================================================
 //=============================================================================================
-void initialize_i2c()
+esp_err_t i2c_master_init()
 {
-    if (s_i2c_initialized) return;
+    if (s_i2c_initialized) return ESP_OK;
 
-    i2c_config_t conf;
-    conf.mode = I2C_MODE_MASTER;
-    conf.sda_io_num = I2C_SDA_PIN;
-    conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
-    conf.scl_io_num = I2C_SCL_PIN;
-    conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
-    conf.master.clk_speed = I2C_MASTER_FREQ_HZ;
-    conf.clk_flags = 0;  // Use default clock flags
-
+    i2c_config_t conf = {
+        .mode = I2C_MODE_MASTER,
+        .sda_io_num = I2C_SDA_PIN,
+        .scl_io_num = I2C_SCL_PIN,
+        .sda_pullup_en = GPIO_PULLUP_ENABLE,
+        .scl_pullup_en = GPIO_PULLUP_ENABLE,
+        .master = {
+            .clk_speed = I2C_MASTER_FREQ_HZ
+        },
+        .clk_flags = 0
+    };
+    
+    // Uninstall driver first if it was previously installed
+    i2c_driver_delete(I2C_MASTER_NUM);
+    
     esp_err_t err = i2c_param_config(I2C_MASTER_NUM, &conf);
     if (err != ESP_OK) {
-        LOG("Failed to configure I2C parameters: %d\n", err);
-        return;
+        LOG("Failed to configure I2C parameters: %s\n", esp_err_to_name(err));
+        return err;
     }
-
-    err = i2c_driver_install(I2C_MASTER_NUM, conf.mode, I2C_MASTER_RX_BUF_DISABLE, I2C_MASTER_TX_BUF_DISABLE, 0);
+    
+    // Install driver with 0 buffer sizes for master mode
+    err = i2c_driver_install(I2C_MASTER_NUM, conf.mode, 0, 0, 0);
     if (err != ESP_OK) {
-        LOG("Failed to install I2C driver: %d\n", err);
-        return;
+        LOG("Failed to install I2C driver: %s\n", esp_err_to_name(err));
+        return err;
     }
 
     s_i2c_initialized = true;
-    LOG("I2C initialized on SDA: %d, SCL: %d\n", I2C_SDA_PIN, I2C_SCL_PIN);
+    LOG("I2C Master initialized - SDA:%d SCL:%d Freq:%dHz\n", I2C_SDA_PIN, I2C_SCL_PIN, I2C_MASTER_FREQ_HZ);
+    return ESP_OK;
 }
 
-//=============================================================================================
-//=============================================================================================
+void initialize_i2c()
+{
+    esp_err_t ret = i2c_master_init();
+    if (ret != ESP_OK) {
+        LOG("Failed to initialize I2C master: %s\n", esp_err_to_name(ret));
+    }
+}
+
 void send_i2c_command(uint8_t command)
 {
     if (!s_i2c_initialized) {
@@ -201,13 +213,17 @@ void send_i2c_command(uint8_t command)
     i2c_master_write_byte(cmd, command, true);
     i2c_master_stop(cmd);
     
-    esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, 1000 / portTICK_RATE_MS);
+    // Use a shorter timeout for better responsiveness
+    esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(100));
     i2c_cmd_link_delete(cmd);
     
     if (ret == ESP_OK) {
         LOG("I2C command %d sent successfully\n", command);
     } else {
-        LOG("Failed to send I2C command %d, error: %d\n", command, ret);
+        LOG("Failed to send I2C command %d, error: %s\n", command, esp_err_to_name(ret));
+        // Try to reinitialize I2C on failure
+        s_i2c_initialized = false;
+        initialize_i2c();
     }
 }
 
@@ -228,6 +244,20 @@ void initialize_gpio_control_pin()
     s_gpio_control_state = false;
     LOG("GPIO control initialized on pin %d, state: OFF\n", GPIO_CONTROL_PIN);
 #endif
+}
+
+//=============================================================================================
+//=============================================================================================
+void initialize_i2c_at_boot()
+{
+    // Initialize I2C early in the boot process
+    LOG("Initializing I2C at boot...\n");
+    esp_err_t ret = i2c_master_init();
+    if (ret == ESP_OK && s_i2c_initialized) {
+        LOG("I2C successfully initialized at boot\n");
+    } else {
+        LOG("Failed to initialize I2C at boot: %s\n", esp_err_to_name(ret));
+    }
 }
 
 //=============================================================================================
@@ -830,11 +860,12 @@ IRAM_ATTR static void handle_ground2air_control_packet(Ground2Air_Control_Packet
     #ifdef GPIO_CONTROL_PIN
     if (s_restart_time == 0)
     {
-        bool new_flash_state = (src.command == I2C_CMD_FLASH); // Command 5 is flash
-        if (s_gpio_control_state != new_flash_state)
+        // Only activate GPIO when flash command is received, don't change state for other commands
+        if (src.command == I2C_CMD_FLASH)
         {
-            set_gpio_control_pin(new_flash_state);
-            LOG("Flash state changed to: %s\n", new_flash_state ? "ON" : "OFF");
+            // Activate GPIO for flash command
+            set_gpio_control_pin(true);
+            LOG("Flash activated\n");
         }
     }
     #endif
@@ -1996,6 +2027,7 @@ extern "C" void app_main()
     // initialize_esp32cam_flash_led_pin(true);
     // initialize_rec_button();
     initialize_gpio_control_pin();
+    initialize_i2c_at_boot();
 
 #ifdef ENABLE_PROFILER
     s_profiler.init();
@@ -2112,14 +2144,14 @@ extern "C" void app_main()
 
             if (s_uart_verbose > 0 )
             {
-                LOG("WLAN S: %d, R: %d, E: %d, F: %d, D: %d, %%: %d...%d || FPS: %d(%d), D: %d || SD D: %d, E: %d || TLM IN: %d OUT: %d\nSK1: %d SK2: %d, SK3: %d, Q: %d s: %d ovf:%d || sbg: %d || AIR: 0x%04x || GS: 0x%04x\n ",
-                    s_stats.wlan_data_sent, s_stats.wlan_data_received, s_stats.wlan_error_count, s_stats.fec_spin_count,
-                    s_stats.wlan_received_packets_dropped, s_min_wlan_outgoing_queue_usage_seen, s_max_wlan_outgoing_queue_usage, 
-                    s_actual_capture_fps, s_actual_capture_fps_expected, s_stats.video_data, s_stats.sd_data, s_stats.sd_drops, 
-                    s_stats.in_telemetry_data, s_stats.out_telemetry_data,
-                    (int)(s_quality_framesize_K1*100),  (int)(s_quality_framesize_K2*100), (int)(s_quality_framesize_K3*100), 
-                    s_quality, (s_stats.camera_frame_size_min + s_stats.camera_frame_size_max)/2, cam_ovf_count, s_dbg,
-                    s_air_device_id, s_connected_gs_device_id); 
+                // LOG("WLAN S: %d, R: %d, E: %d, F: %d, D: %d, %%: %d...%d || FPS: %d(%d), D: %d || SD D: %d, E: %d || TLM IN: %d OUT: %d\nSK1: %d SK2: %d, SK3: %d, Q: %d s: %d ovf:%d || sbg: %d || AIR: 0x%04x || GS: 0x%04x\n ",
+                //     s_stats.wlan_data_sent, s_stats.wlan_data_received, s_stats.wlan_error_count, s_stats.fec_spin_count,
+                //     s_stats.wlan_received_packets_dropped, s_min_wlan_outgoing_queue_usage_seen, s_max_wlan_outgoing_queue_usage, 
+                //     s_actual_capture_fps, s_actual_capture_fps_expected, s_stats.video_data, s_stats.sd_data, s_stats.sd_drops, 
+                //     s_stats.in_telemetry_data, s_stats.out_telemetry_data,
+                //     (int)(s_quality_framesize_K1*100),  (int)(s_quality_framesize_K2*100), (int)(s_quality_framesize_K3*100), 
+                //     s_quality, (s_stats.camera_frame_size_min + s_stats.camera_frame_size_max)/2, cam_ovf_count, s_dbg,
+                //     s_air_device_id, s_connected_gs_device_id);
                 print_cpu_usage();
             }
 

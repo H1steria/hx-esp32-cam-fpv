@@ -11,6 +11,7 @@
 
 //===============================================================
 //For esp32cam
+#define GPIO_CONTROL_PIN GPIO_NUM_4
 
 //for development - enabled debug output on normal UART pins (1,3)
 #define USBUART_DEBUG_OUTPUT
@@ -32,8 +33,6 @@
 #define I2C_CMD_RIGHT 3
 #define I2C_CMD_LEFT 4
 #define I2C_CMD_FLASH 5
-
-#ifdef BOARD_ESP32CAM
 
 //   Debug log on pin 33 (existing LED)
 //   UART0:  Mavlink RX=3 TX=1 
@@ -85,9 +84,8 @@
 // #define STATUS_LED_OFF 1
 
 // #define ESP32CAM_FLASH_LED_PIN GPIO_NUM_4  //shared pin for LED and REC button
-#define GPIO_CONTROL_PIN GPIO_NUM_4
 
-#endif
+
 
 //===============================================================
 //===============================================================
