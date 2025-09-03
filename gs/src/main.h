@@ -171,8 +171,8 @@ extern Clock::time_point s_incompatibleFirmwareTime;
 
 // Command definitions for Ground2Air_Control_Packet
 #define CMD_NONE     0
-#define CMD_BACKWARD 1
-#define CMD_FORWARD  2
+#define CMD_FORWARD  1
+#define CMD_BACKWARD 2
 #define CMD_RIGHT    3
 #define CMD_LEFT     4
 #define CMD_FLASH    5

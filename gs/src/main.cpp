@@ -477,14 +477,14 @@ static void comms_thread_proc()
     {
         if (Clock::now() - last_stats_tp >= std::chrono::milliseconds(1000))
         {
-            LOGI("Sent: {}, RX len: {}, TlmIn: {}, TlmOut: {}, RSSI: {}/{}, Latency: {}/{}/{}, vfps: {}, AIR:0x{:04X}, GS:0x{:04X}", 
-                sent_count, total_data, in_tlm_size, out_tlm_size,
-                (int)s_last_gs_stats.rssiDbm[0], (int)s_last_gs_stats.rssiDbm[1],
-                std::chrono::duration_cast<std::chrono::milliseconds>(ping_min).count(),
-                std::chrono::duration_cast<std::chrono::milliseconds>(ping_max).count(),
-                ping_count > 0 ? std::chrono::duration_cast<std::chrono::milliseconds>(ping_avg).count() / ping_count : 0,
-                video_fps,
-                s_connected_air_device_id, s_groundstation_config.deviceId);
+            // LOGI("Sent: {}, RX len: {}, TlmIn: {}, TlmOut: {}, RSSI: {}/{}, Latency: {}/{}/{}, vfps: {}, AIR:0x{:04X}, GS:0x{:04X}", 
+            //     sent_count, total_data, in_tlm_size, out_tlm_size,
+            //     (int)s_last_gs_stats.rssiDbm[0], (int)s_last_gs_stats.rssiDbm[1],
+            //     std::chrono::duration_cast<std::chrono::milliseconds>(ping_min).count(),
+            //     std::chrono::duration_cast<std::chrono::milliseconds>(ping_max).count(),
+            //     ping_count > 0 ? std::chrono::duration_cast<std::chrono::milliseconds>(ping_avg).count() / ping_count : 0,
+            //     video_fps,
+            //     s_connected_air_device_id, s_groundstation_config.deviceId);
 
             s_total_data = total_data;
 
@@ -1096,6 +1096,7 @@ int run(char* argv[])
                         packet_to_send.gsDeviceId = s_groundstation_config.deviceId;
                         packet_to_send.crc = 0;
                         packet_to_send.crc = crc8(0, &packet_to_send, sizeof(packet_to_send));
+                        LOGI("Sending {} command to air device 0x{:04X}", gpio_pin_state ? "CMD_FLASH" : "CMD_NONE", s_connected_air_device_id);
                         s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
                     }
                 }
@@ -2045,6 +2046,7 @@ int run(char* argv[])
             packet_to_send.gsDeviceId = s_groundstation_config.deviceId;
             packet_to_send.crc = 0;
             packet_to_send.crc = crc8(0, &packet_to_send, sizeof(packet_to_send));
+            LOGI("Sending CMD_FORWARD command to air device 0x{:04X}", s_connected_air_device_id);
             s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
         }
         else if ( ImGui::IsKeyPressed(ImGuiKey_S) && s_connected_air_device_id != 0 )
@@ -2058,6 +2060,7 @@ int run(char* argv[])
             packet_to_send.gsDeviceId = s_groundstation_config.deviceId;
             packet_to_send.crc = 0;
             packet_to_send.crc = crc8(0, &packet_to_send, sizeof(packet_to_send));
+            LOGI("Sending CMD_BACKWARD command to air device 0x{:04X}", s_connected_air_device_id);
             s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
         }
         else if ( ImGui::IsKeyPressed(ImGuiKey_A) && s_connected_air_device_id != 0 )
@@ -2071,6 +2074,7 @@ int run(char* argv[])
             packet_to_send.gsDeviceId = s_groundstation_config.deviceId;
             packet_to_send.crc = 0;
             packet_to_send.crc = crc8(0, &packet_to_send, sizeof(packet_to_send));
+            LOGI("Sending CMD_LEFT command to air device 0x{:04X}", s_connected_air_device_id);
             s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
         }
         else if ( ImGui::IsKeyPressed(ImGuiKey_D) && s_connected_air_device_id != 0 )
@@ -2084,6 +2088,7 @@ int run(char* argv[])
             packet_to_send.gsDeviceId = s_groundstation_config.deviceId;
             packet_to_send.crc = 0;
             packet_to_send.crc = crc8(0, &packet_to_send, sizeof(packet_to_send));
+            LOGI("Sending CMD_RIGHT command to air device 0x{:04X}", s_connected_air_device_id);
             s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
         }
 
