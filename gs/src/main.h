@@ -169,6 +169,11 @@ extern std::unique_ptr<IHAL> s_hal;
 
 extern Clock::time_point s_incompatibleFirmwareTime;
 
+// DHT11 data variables
+extern float s_dht11_temperature;
+extern float s_dht11_humidity;
+extern bool s_dht11_data_valid;
+
 // Command definitions for Ground2Air_Control_Packet
 #define CMD_NONE     0
 #define CMD_FORWARD  1

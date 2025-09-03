@@ -63,6 +63,7 @@
 static int s_stats_last_tp = -10000;
 static int s_last_osd_packet_tp = -10000;
 static int s_last_config_packet_tp = -10000;
+static int64_t s_last_report_packet_tp = -5000;
 
 #define MJPEG_PATTERN_SIZE 512 
 
@@ -1260,10 +1261,6 @@ IRAM_ATTR void send_air2ground_osd_packet()
 
     packet.stats.suspended = s_camera_stopped != 0;
 
-    // Add DHT11 data to the packet
-    packet.stats.dht11_temperature = s_dht11_temperature;
-    packet.stats.dht11_humidity = s_dht11_humidity;
-    packet.stats.dht11_data_valid = s_dht11_data_valid ? 1 : 0;
 
     memcpy( &packet.buffer, g_osd.getBuffer(), OSD_BUFFER_SIZE );
     
@@ -1301,6 +1298,43 @@ IRAM_ATTR void send_air2ground_config_packet()
 
     packet.crc = 0;
     packet.crc = crc8(0, &packet, sizeof(Air2Ground_Config_Packet));
+
+    if (!s_fec_encoder.flush_encode_packet(true))
+    {
+        LOG("Fec codec busy\n");
+        s_stats.wlan_error_count++;
+#ifdef PROFILE_CAMERA_DATA    
+        s_profiler.toggle(PF_CAMERA_FEC_OVF);
+#endif
+    }
+}
+
+//=============================================================================================
+//=============================================================================================
+IRAM_ATTR void send_air2ground_report_packet()
+{
+    uint8_t* packet_data = s_fec_encoder.get_encode_packet_data(true);
+    if( !packet_data )
+    {
+        LOG("no data buf!\n");
+        return;
+    }
+
+    Air2Ground_Report_Packet& packet = *(Air2Ground_Report_Packet*)packet_data;
+    packet.type = Air2Ground_Header::Type::Report; // Using Report type for report packets
+    packet.size = sizeof(Air2Ground_Report_Packet);
+    packet.pong = s_ground2air_config_packet.ping;
+    packet.version = PACKET_VERSION;
+    packet.airDeviceId = s_air_device_id;
+    packet.gsDeviceId = s_connected_gs_device_id;
+    packet.crc = 0;
+
+    // Fill in DHT11 data
+    packet.temperature = s_dht11_temperature;
+    packet.humidity = s_dht11_humidity;
+    packet.data_valid = s_dht11_data_valid ? 1 : 0;
+
+    packet.crc = crc8(0, &packet, sizeof(Air2Ground_Report_Packet));
 
     if (!s_fec_encoder.flush_encode_packet(true))
     {
@@ -2316,6 +2350,16 @@ extern "C" void app_main()
                 
                 s_fec_encoder.unlock();
             }
+        }
+
+        // Send DHT11 report packet every 5 seconds
+        dt = millis() - s_last_report_packet_tp;
+        if (dt > 5000) 
+        {
+            s_last_report_packet_tp = millis();
+            s_fec_encoder.lock();
+            send_air2ground_report_packet();
+            s_fec_encoder.unlock();
         }
 
         if ( s_accept_connection_timeout_ms != 0 ) 

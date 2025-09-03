@@ -296,6 +296,12 @@ Stats s_queueUsage_stats;
 
 static AirStats s_last_airStats;
 
+// DHT11 data variables
+float s_dht11_temperature = 0.0f;
+float s_dht11_humidity = 0.0f;
+bool s_dht11_data_valid = false;
+Clock::time_point s_last_dht11_data_tp = Clock::now();
+
 GSStats s_gs_stats;
 GSStats s_last_gs_stats;
 
@@ -848,6 +854,39 @@ static void comms_thread_proc()
 
                 s_last_stats_packet_tp = Clock::now();
             }
+            else if (air2ground_header.type == Air2Ground_Header::Type::Report)
+            {
+                // Handle Report packets (DHT11 data)
+                if (packet_size > rx_data.size)
+                {
+                    LOGE("Report frame: data too big: {} > {}", packet_size, rx_data.size);
+                    break;
+                }
+                if (packet_size < sizeof(Air2Ground_Report_Packet))
+                {
+                    LOGE("Report frame: data too small: {} > {}", packet_size, sizeof(Air2Ground_Report_Packet));
+                    break;
+                }
+
+                Air2Ground_Report_Packet& air2ground_report_packet = *(Air2Ground_Report_Packet*)rx_data.data.data();
+                uint8_t crc = air2ground_report_packet.crc;
+                air2ground_report_packet.crc = 0;
+                uint8_t computed_crc = crc8(0, rx_data.data.data(), sizeof(Air2Ground_Report_Packet));
+                if (crc != computed_crc)
+                {
+                    LOGE("Report frame: crc mismatch: {} != {}", crc, computed_crc);
+                    break;
+                }
+
+                // Update DHT11 data variables
+                s_dht11_temperature = air2ground_report_packet.temperature;
+                s_dht11_humidity = air2ground_report_packet.humidity;
+                s_dht11_data_valid = air2ground_report_packet.data_valid != 0;
+                s_last_dht11_data_tp = Clock::now(); // Update timestamp when data is received
+
+                total_data += rx_data.size;
+                total_data10 += rx_data.size;
+            }
             else
             {
                 LOGE("Unknown air packet: {}", air2ground_header.type);
@@ -1355,6 +1394,23 @@ int run(char* argv[])
                 ImGui::PopID();
             }
 
+            // Display DHT11 data in status bar
+            // Show data if valid and received within last 10 seconds, otherwise show "N/A"
+            char buf[64];
+            if (s_dht11_data_valid && (Clock::now() - s_last_dht11_data_tp < std::chrono::seconds(10))) {
+                sprintf(buf, "%.1f°C %.1f%%", s_dht11_temperature, s_dht11_humidity);
+            } else {
+                sprintf(buf, "N/A");
+            }
+            ImGui::SameLine();
+            ImGui::PushID(0);
+            ImGui::PushStyleColor(ImGuiCol_Button, (ImVec4)ImColor::HSV(0 / 7.0f, 0, 0.6f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, (ImVec4)ImColor::HSV(0 / 7.0f, 0.0f, 0.6f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, (ImVec4)ImColor::HSV(0 / 7.0f, 0.0f, 0.6f));
+            ImGui::Button(buf, ImVec2(120.0f, 0));
+            ImGui::PopStyleColor(3);
+            ImGui::PopID();
+
             if ( s_groundstation_config.stats )
             {
                 char overlay[32];
@@ -1632,36 +1688,6 @@ int run(char* argv[])
 
                         ImGui::TableSetColumnIndex(1);
                         ImGui::Text("%d°C/%d°C", (int)(g_CPUTemp.getTemperature()+0.5f), (int)(s_last_airStats.temperature));
-                    }
-
-                    // Display DHT11 data if valid
-                    if (s_last_airStats.dht11_data_valid) {
-                        ImGui::TableNextRow();
-                        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, c );
-
-                        ImGui::TableSetColumnIndex(0);
-                        ImGui::Text("DHT11 Temperature");
-
-                        ImGui::TableSetColumnIndex(1);
-                        ImGui::Text("%.2f°C", s_last_airStats.dht11_temperature);
-
-                        ImGui::TableNextRow();
-                        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, c );
-
-                        ImGui::TableSetColumnIndex(0);
-                        ImGui::Text("DHT11 Humidity");
-
-                        ImGui::TableSetColumnIndex(1);
-                        ImGui::Text("%.2f%%", s_last_airStats.dht11_humidity);
-                    } else {
-                        ImGui::TableNextRow();
-                        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, c );
-
-                        ImGui::TableSetColumnIndex(0);
-                        ImGui::Text("DHT11 Data");
-
-                        ImGui::TableSetColumnIndex(1);
-                        ImGui::Text("Invalid");
                     }
 
                     ImGui::EndTable();

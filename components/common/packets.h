@@ -210,7 +210,8 @@ struct Air2Ground_Header
         Video,
         Telemetry,
         OSD,
-        Config
+        Config,
+        Report
     };
 
     Type type = Type::Video; 
@@ -250,6 +251,18 @@ static_assert(sizeof(Air2Ground_Video_Packet) == 18, "");
 struct Air2Ground_Data_Packet : Air2Ground_Header
 {
 };
+
+//======================================================
+//======================================================
+struct Air2Ground_Report_Packet : Air2Ground_Header
+{
+    float temperature; // Temperature data (e.g., from DHT11 or other sensors)
+    float humidity;    // Humidity data (e.g., from DHT11 or other sensors)
+    uint8_t data_valid : 1; // Flag to indicate if the data is valid
+    uint8_t reserved : 7;   // Reserved for future use
+};
+
+static_assert(sizeof(Air2Ground_Report_Packet) <= AIR2GROUND_MTU, "");
 
 
 #define OSD_COLS 53
@@ -320,13 +333,6 @@ struct AirStats
     int16_t ae_level: 3;     //-2 - 2, for aec=true
     int16_t reserved1: 1; 
 //32
-    float dht11_temperature; // DHT11 temperature data
-    float dht11_humidity;    // DHT11 humidity data
-    uint8_t dht11_data_valid : 1; // Flag to indicate if DHT11 data is valid
-    uint8_t reserved2 : 7;   // Reserved for future use
-//36 (assuming float is 4 bytes each)
-
-//..39
 };
 
 //======================================================
