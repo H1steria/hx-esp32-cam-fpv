@@ -320,6 +320,11 @@ struct AirStats
     int16_t ae_level: 3;     //-2 - 2, for aec=true
     int16_t reserved1: 1; 
 //32
+    float dht11_temperature; // DHT11 temperature data
+    float dht11_humidity;    // DHT11 humidity data
+    uint8_t dht11_data_valid : 1; // Flag to indicate if DHT11 data is valid
+    uint8_t reserved2 : 7;   // Reserved for future use
+//36 (assuming float is 4 bytes each)
 
 //..39
 };

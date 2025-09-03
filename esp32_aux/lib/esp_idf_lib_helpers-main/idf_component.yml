@@ -1,0 +1,27 @@
+---
+version: 1.3.10
+description: Common support library for esp-idf-lib
+license: ISC
+targets:
+  - esp32
+  - esp32c2
+  - esp32c3
+  - esp32c5
+  - esp32c6
+  - esp32c61
+  - esp32h2
+  - esp32p4
+  - esp32s2
+  - esp32s3
+dependencies: {}
+maintainers:
+  - Tomoyuki Sakurai (@trombik) <y@trombik.org>
+  - Ruslan V. Uss (@UncleRus) <unclerus@gmail.com>
+url: https://github.com/esp-idf-lib/core
+repository: https://github.com/esp-idf-lib/esp_idf_lib_helpers
+documentation: https://esp-idf-lib.github.io/esp_idf_lib_helpers/
+issues: https://github.com/esp-idf-lib/esp_idf_lib_helpers/issues
+discussion: https://github.com/esp-idf-lib/core/discussions
+files:
+  exclude:
+    - docs/**/*

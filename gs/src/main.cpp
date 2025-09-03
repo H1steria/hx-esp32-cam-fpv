@@ -1634,6 +1634,36 @@ int run(char* argv[])
                         ImGui::Text("%d°C/%d°C", (int)(g_CPUTemp.getTemperature()+0.5f), (int)(s_last_airStats.temperature));
                     }
 
+                    // Display DHT11 data if valid
+                    if (s_last_airStats.dht11_data_valid) {
+                        ImGui::TableNextRow();
+                        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, c );
+
+                        ImGui::TableSetColumnIndex(0);
+                        ImGui::Text("DHT11 Temperature");
+
+                        ImGui::TableSetColumnIndex(1);
+                        ImGui::Text("%.2f°C", s_last_airStats.dht11_temperature);
+
+                        ImGui::TableNextRow();
+                        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, c );
+
+                        ImGui::TableSetColumnIndex(0);
+                        ImGui::Text("DHT11 Humidity");
+
+                        ImGui::TableSetColumnIndex(1);
+                        ImGui::Text("%.2f%%", s_last_airStats.dht11_humidity);
+                    } else {
+                        ImGui::TableNextRow();
+                        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, c );
+
+                        ImGui::TableSetColumnIndex(0);
+                        ImGui::Text("DHT11 Data");
+
+                        ImGui::TableSetColumnIndex(1);
+                        ImGui::Text("Invalid");
+                    }
+
                     ImGui::EndTable();
                 }
 

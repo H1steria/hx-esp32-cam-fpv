@@ -109,6 +109,9 @@ uint16_t s_framesCounter = 0;
 
 static bool s_initialized = false;
 
+// DHT11 task handle
+static TaskHandle_t s_dht11_task_handle = NULL;
+
 static uint16_t s_air_device_id;
 static uint16_t s_connected_gs_device_id = 0;
 
@@ -141,6 +144,11 @@ static bool s_camera_stopped_requested = false;
 static uint64_t s_shouldRestartRecording;
 
 HXMavlinkParser mavlinkParserIn(true);
+
+// DHT11 data
+static float s_dht11_humidity = 0.0;
+static float s_dht11_temperature = 0.0;
+static bool s_dht11_data_valid = false;
 
 //=============================================================================================
 //=============================================================================================
@@ -227,6 +235,66 @@ void send_i2c_command(uint8_t command)
     }
 }
 
+// Function to read DHT11 data from I2C slave
+esp_err_t read_dht11_data(float* humidity, float* temperature) {
+    if (!s_i2c_initialized) {
+        initialize_i2c();
+        if (!s_i2c_initialized) {
+            LOG("Failed to initialize I2C\n");
+            return ESP_FAIL;
+        }
+    }
+
+    uint8_t command = 0x06; // DHT11 data command
+    uint8_t data_buffer[9]; // 1 byte for command + 4 bytes for humidity + 4 bytes for temperature
+
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (I2C_SLAVE_ADDR << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_write_byte(cmd, command, true);
+    i2c_master_stop(cmd);
+    
+    esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(100));
+    i2c_cmd_link_delete(cmd);
+    
+    if (ret != ESP_OK) {
+        LOG("Failed to send DHT11 read command, error: %s\n", esp_err_to_name(ret));
+        return ret;
+    }
+
+    // Read data from slave
+    cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (I2C_SLAVE_ADDR << 1) | I2C_MASTER_READ, true);
+    i2c_master_read(cmd, data_buffer, 9, I2C_MASTER_LAST_NACK);
+    i2c_master_stop(cmd);
+    
+    ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(100));
+    i2c_cmd_link_delete(cmd);
+    
+    if (ret != ESP_OK) {
+        LOG("Failed to read DHT11 data, error: %s\n", esp_err_to_name(ret));
+        return ret;
+    }
+
+    // Check if the first byte is the DHT11 data command
+    if (data_buffer[0] != 0x06) {
+        LOG("Invalid DHT11 data command received: 0x%02X\n", data_buffer[0]);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    // Convert bytes to float values
+    uint8_t* hum_bytes = (uint8_t*)humidity;
+    uint8_t* temp_bytes = (uint8_t*)temperature;
+    
+    for (int i = 0; i < 4; i++) {
+        hum_bytes[i] = data_buffer[1 + i];
+        temp_bytes[i] = data_buffer[5 + i];
+    }
+
+    return ESP_OK;
+}
+
 //=============================================================================================
 //=============================================================================================
 void initialize_gpio_control_pin()
@@ -282,6 +350,36 @@ IRAM_ATTR uint64_t micros()
 IRAM_ATTR uint64_t millis()
 {
     return esp_timer_get_time() / 1000ULL;
+}
+
+//=============================================================================================
+//=============================================================================================
+// DHT11 task to periodically read sensor data
+void dht11_task(void* pvParameters)
+{
+    while (1) 
+    {
+        // Read DHT11 data
+        float humidity, temperature;
+        esp_err_t result = read_dht11_data(&humidity, &temperature);
+        
+        if (result == ESP_OK) 
+        {
+            // Update global variables
+            s_dht11_humidity = humidity;
+            s_dht11_temperature = temperature;
+            s_dht11_data_valid = true;
+            LOG("DHT11 data - Humidity: %.2f%%, Temperature: %.2f°C\n", humidity, temperature);
+        } 
+        else 
+        {
+            s_dht11_data_valid = false;
+            LOG("Failed to read DHT11 data: %s\n", esp_err_to_name(result));
+        }
+        
+        // Wait for 5 seconds before next reading
+        vTaskDelay(5000 / portTICK_PERIOD_MS);
+    }
 }
 
 //=============================================================================================
@@ -1161,6 +1259,11 @@ IRAM_ATTR void send_air2ground_osd_packet()
     packet.stats.outMavlinkRate = s_last_stats.out_telemetry_data;
 
     packet.stats.suspended = s_camera_stopped != 0;
+
+    // Add DHT11 data to the packet
+    packet.stats.dht11_temperature = s_dht11_temperature;
+    packet.stats.dht11_humidity = s_dht11_humidity;
+    packet.stats.dht11_data_valid = s_dht11_data_valid ? 1 : 0;
 
     memcpy( &packet.buffer, g_osd.getBuffer(), OSD_BUFFER_SIZE );
     
@@ -2126,6 +2229,14 @@ extern "C" void app_main()
     temperature_sensor_init();
 
     s_initialized = true;
+
+    // Create DHT11 task
+    xTaskCreate(dht11_task, "dht11_task", 2048, NULL, 5, &s_dht11_task_handle);
+    if (s_dht11_task_handle == NULL) {
+        LOG("Failed to create DHT11 task\n");
+    } else {
+        LOG("DHT11 task created successfully\n");
+    }
 
     while (true)
     {

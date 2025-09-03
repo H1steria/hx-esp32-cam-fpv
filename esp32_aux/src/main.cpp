@@ -4,6 +4,7 @@
 #include "driver/gpio.h"
 #include "i2c_handler.h"
 #include "motor.h"
+#include "dht11.h"
 
 // I2C Command Definitions from components/air/main.h
 #define I2C_CMD_FORWARD 1
@@ -22,6 +23,45 @@ static const char *TAG = "MAIN";
 #define ENA_PIN GPIO_NUM_33
 #define ENB_PIN GPIO_NUM_32
 
+// DHT11 sensor pin
+#define DHT11_PIN GPIO_NUM_4
+
+// DHT11 sensor instance
+dht11_sensor_t dht11_sensor;
+
+// Function to send DHT11 data via I2C
+void send_dht11_data(float humidity, float temperature) {
+    // For now, just log the data
+    ESP_LOGI(TAG, "DHT11 Data - Humidity: %.1f%%, Temperature: %.1f°C", humidity, temperature);
+    
+    // TODO: Implement actual I2C sending to air unit
+    // This would require implementing I2C master functionality
+    // to send data to the air unit
+}
+
+// DHT11 reading task
+void dht11_task(void *pvParameter) {
+    float humidity, temperature;
+    
+    while (1) {
+        // Read data from the sensor
+        esp_err_t read_result = dht11_read(&dht11_sensor, &humidity, &temperature);
+        
+        if (read_result == ESP_OK) {
+            // Print the values
+            dht11_print_values(humidity, temperature);
+            
+            // Send data via I2C
+            send_dht11_data(humidity, temperature);
+        } else {
+            ESP_LOGE(TAG, "Failed to read data from DHT11 sensor");
+        }
+        
+        // Wait for 2 seconds before next reading
+        vTaskDelay(2000 / portTICK_PERIOD_MS);
+    }
+}
+
 extern "C" void app_main() {    
     // Inicializar I2C Slave
     if (init_i2c_slave() != ESP_OK) {
@@ -31,6 +71,16 @@ extern "C" void app_main() {
     
     // Initialize motor controller
     Motor motor(IN1_PIN, IN2_PIN, IN3_PIN, IN4_PIN, ENA_PIN, ENB_PIN);
+    
+    // Initialize DHT11 sensor
+    if (dht11_init(&dht11_sensor, DHT11_PIN) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize DHT11 sensor");
+    } else {
+        ESP_LOGI(TAG, "DHT11 sensor initialized on GPIO %d", DHT11_PIN);
+        
+        // Create DHT11 reading task
+        xTaskCreate(dht11_task, "dht11_task", 2048, NULL, 5, NULL);
+    }
     
     ESP_LOGI(TAG, "Sistema iniciado - Esperando comandos I2C");
     
