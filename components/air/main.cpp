@@ -216,6 +216,18 @@ void send_i2c_command(uint8_t command)
         }
     }
 
+    // Check if camera is actively capturing frames, if so, delay I2C communication
+    if (s_video_frame_started) {
+        // Add a small delay to allow camera operations to complete
+        vTaskDelay(5 / portTICK_PERIOD_MS);
+        
+        // Check again after delay
+        if (s_video_frame_started) {
+            // Camera is still busy, delay more
+            vTaskDelay(10 / portTICK_PERIOD_MS);
+        }
+    }
+
     i2c_cmd_handle_t cmd = i2c_cmd_link_create();
     i2c_master_start(cmd);
     i2c_master_write_byte(cmd, (I2C_SLAVE_ADDR << 1) | I2C_MASTER_WRITE, true);
@@ -223,7 +235,7 @@ void send_i2c_command(uint8_t command)
     i2c_master_stop(cmd);
     
     // Use a shorter timeout for better responsiveness
-    esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(100));
+    esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(50));
     i2c_cmd_link_delete(cmd);
     
     if (ret == ESP_OK) {
@@ -234,10 +246,25 @@ void send_i2c_command(uint8_t command)
         s_i2c_initialized = false;
         initialize_i2c();
     }
+    
+    // Add a small delay after I2C communication to reduce interference
+    vTaskDelay(5 / portTICK_PERIOD_MS);
 }
 
-// Function to read DHT11 data from I2C slave
+// Function to read DHT11 data from I2C slave with timeout and priority handling
 esp_err_t read_dht11_data(float* humidity, float* temperature) {
+    // Check if camera is actively capturing frames, if so, delay DHT11 reading
+    if (s_video_frame_started) {
+        // Add a small delay to allow camera operations to complete
+        vTaskDelay(5 / portTICK_PERIOD_MS);
+        
+        // Check again after delay
+        if (s_video_frame_started) {
+            // Camera is still busy, delay more
+            vTaskDelay(10 / portTICK_PERIOD_MS);
+        }
+    }
+
     if (!s_i2c_initialized) {
         initialize_i2c();
         if (!s_i2c_initialized) {
@@ -249,18 +276,34 @@ esp_err_t read_dht11_data(float* humidity, float* temperature) {
     uint8_t command = 0x06; // DHT11 data command
     uint8_t data_buffer[9]; // 1 byte for command + 4 bytes for humidity + 4 bytes for temperature
 
+    // Create a timeout for the entire operation
+    TickType_t timeout_start = xTaskGetTickCount();
+    const TickType_t max_operation_time = pdMS_TO_TICKS(200); // 200ms max for DHT11 operation
+
     i2c_cmd_handle_t cmd = i2c_cmd_link_create();
     i2c_master_start(cmd);
     i2c_master_write_byte(cmd, (I2C_SLAVE_ADDR << 1) | I2C_MASTER_WRITE, true);
     i2c_master_write_byte(cmd, command, true);
     i2c_master_stop(cmd);
     
-    esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(100));
+    // Use a shorter timeout for better responsiveness
+    esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(50));
     i2c_cmd_link_delete(cmd);
+    
+    // Check if we've exceeded our time budget
+    if ((xTaskGetTickCount() - timeout_start) > max_operation_time) {
+        LOG("DHT11 read command timeout\n");
+        return ESP_ERR_TIMEOUT;
+    }
     
     if (ret != ESP_OK) {
         LOG("Failed to send DHT11 read command, error: %s\n", esp_err_to_name(ret));
         return ret;
+    }
+
+    // Check again if we should yield to camera operations
+    if (s_video_frame_started) {
+        vTaskDelay(2 / portTICK_PERIOD_MS);
     }
 
     // Read data from slave
@@ -270,8 +313,14 @@ esp_err_t read_dht11_data(float* humidity, float* temperature) {
     i2c_master_read(cmd, data_buffer, 9, I2C_MASTER_LAST_NACK);
     i2c_master_stop(cmd);
     
-    ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(100));
+    ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(50));
     i2c_cmd_link_delete(cmd);
+    
+    // Check if we've exceeded our time budget
+    if ((xTaskGetTickCount() - timeout_start) > max_operation_time) {
+        LOG("DHT11 data read timeout\n");
+        return ESP_ERR_TIMEOUT;
+    }
     
     if (ret != ESP_OK) {
         LOG("Failed to read DHT11 data, error: %s\n", esp_err_to_name(ret));
@@ -355,12 +404,31 @@ IRAM_ATTR uint64_t millis()
 
 //=============================================================================================
 //=============================================================================================
-// DHT11 task to periodically read sensor data
+// DHT11 task to read sensor data when camera is not busy
 void dht11_task(void* pvParameters)
 {
+    // Set this task to the lowest priority to minimize interference with camera operations
+    vTaskPrioritySet(NULL, tskIDLE_PRIORITY + 1);
+    
+    // Use a longer initial delay to ensure camera is fully initialized
+    vTaskDelay(5000 / portTICK_PERIOD_MS);
+    
     while (1) 
     {
-        // Read DHT11 data
+        // Wait for 5 seconds
+        vTaskDelay(5000 / portTICK_PERIOD_MS);
+        
+        // Now check if camera is busy, if so, wait until it's not
+        while (s_video_frame_started) {
+            // Camera is busy, wait a bit and check again
+            vTaskDelay(50 / portTICK_PERIOD_MS);
+        }
+        
+        // Camera is not busy, proceed with reading the sensor
+        // Add a small delay to ensure camera operations have priority
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+        
+        // Read DHT11 data with timeout to prevent blocking
         float humidity, temperature;
         esp_err_t result = read_dht11_data(&humidity, &temperature);
         
@@ -378,8 +446,8 @@ void dht11_task(void* pvParameters)
             LOG("Failed to read DHT11 data: %s\n", esp_err_to_name(result));
         }
         
-        // Wait for 5 seconds before next reading
-        vTaskDelay(5000 / portTICK_PERIOD_MS);
+        // Add a small delay after reading to reduce interference
+        vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 }
 
