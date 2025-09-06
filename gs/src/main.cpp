@@ -878,6 +878,12 @@ static void comms_thread_proc()
                     break;
                 }
 
+                // Log that we received a report packet
+                LOGI("Received Report packet: Temperature=%.2f°C, Humidity=%.2f%%, Valid=%d", 
+                     air2ground_report_packet.temperature, 
+                     air2ground_report_packet.humidity, 
+                     (int)air2ground_report_packet.data_valid);
+
                 // Update DHT11 data variables
                 s_dht11_temperature = air2ground_report_packet.temperature;
                 s_dht11_humidity = air2ground_report_packet.humidity;
