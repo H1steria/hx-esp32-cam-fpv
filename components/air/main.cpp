@@ -217,14 +217,15 @@ void send_i2c_command(uint8_t command)
     }
 
     // Check if camera is actively capturing frames, if so, delay I2C communication
+    // Use a task notification to check if camera task is running instead of busy waiting
     if (s_video_frame_started) {
         // Add a small delay to allow camera operations to complete
-        vTaskDelay(5 / portTICK_PERIOD_MS);
+        vTaskDelay(10 / portTICK_PERIOD_MS);
         
         // Check again after delay
         if (s_video_frame_started) {
             // Camera is still busy, delay more
-            vTaskDelay(10 / portTICK_PERIOD_MS);
+            vTaskDelay(20 / portTICK_PERIOD_MS);
         }
     }
 
@@ -234,8 +235,8 @@ void send_i2c_command(uint8_t command)
     i2c_master_write_byte(cmd, command, true);
     i2c_master_stop(cmd);
     
-    // Use a shorter timeout for better responsiveness
-    esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(50));
+    // Use a longer timeout to ensure reliable communication
+    esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(100));
     i2c_cmd_link_delete(cmd);
     
     if (ret == ESP_OK) {
@@ -248,7 +249,10 @@ void send_i2c_command(uint8_t command)
     }
     
     // Add a small delay after I2C communication to reduce interference
-    vTaskDelay(5 / portTICK_PERIOD_MS);
+    // Only delay if camera is not actively capturing
+    if (!s_video_frame_started) {
+        vTaskDelay(5 / portTICK_PERIOD_MS);
+    }
 }
 
 // Function to read DHT11 data from I2C slave with timeout and priority handling
@@ -418,15 +422,14 @@ void dht11_task(void* pvParameters)
         // Wait for 5 seconds
         vTaskDelay(5000 / portTICK_PERIOD_MS);
         
-        // Now check if camera is busy, if so, wait until it's not
-        while (s_video_frame_started) {
+        // Check if camera is busy, if so, wait until it's not
+        // But don't wait indefinitely - we want to send periodic updates
+        int wait_count = 0;
+        while (s_video_frame_started && wait_count < 20) { // Max 1 second wait
             // Camera is busy, wait a bit and check again
             vTaskDelay(50 / portTICK_PERIOD_MS);
+            wait_count++;
         }
-        
-        // Camera is not busy, proceed with reading the sensor
-        // Add a small delay to ensure camera operations have priority
-        vTaskDelay(10 / portTICK_PERIOD_MS);
         
         // Read DHT11 data with timeout to prevent blocking
         float humidity, temperature;
@@ -445,9 +448,6 @@ void dht11_task(void* pvParameters)
             s_dht11_data_valid = false;
             LOG("Failed to read DHT11 data: %s\n", esp_err_to_name(result));
         }
-        
-        // Add a small delay after reading to reduce interference
-        vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 }
 
@@ -2332,8 +2332,8 @@ extern "C" void app_main()
 
     s_initialized = true;
 
-    // Create DHT11 task
-    xTaskCreate(dht11_task, "dht11_task", 2048, NULL, 5, &s_dht11_task_handle);
+    // Create DHT11 task with lower priority to minimize interference
+    xTaskCreate(dht11_task, "dht11_task", 2048, NULL, 1, &s_dht11_task_handle);
     if (s_dht11_task_handle == NULL) {
         LOG("Failed to create DHT11 task\n");
     } else {
@@ -2424,10 +2424,13 @@ extern "C" void app_main()
         dt = millis() - s_last_report_packet_tp;
         if (dt > 5000) 
         {
-            s_last_report_packet_tp = millis();
-            s_fec_encoder.lock();
-            send_air2ground_report_packet();
-            s_fec_encoder.unlock();
+            // Only send report packet if camera is not actively capturing
+            if (!s_video_frame_started && s_initialized && s_connected_gs_device_id != 0) {
+                s_fec_encoder.lock();
+                send_air2ground_report_packet();
+                s_fec_encoder.unlock();
+                s_last_report_packet_tp = millis(); // Reset timer after sending
+            }
         }
 
         if ( s_accept_connection_timeout_ms != 0 ) 
