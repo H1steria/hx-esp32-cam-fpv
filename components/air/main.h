@@ -33,6 +33,7 @@
 #define I2C_CMD_RIGHT 3
 #define I2C_CMD_LEFT 4
 #define I2C_CMD_FLASH 5
+#define I2C_CMD_GET_DHT11_DATA 6  // New command to request DHT11 data
 
 //   Debug log on pin 33 (existing LED)
 //   UART0:  Mavlink RX=3 TX=1 

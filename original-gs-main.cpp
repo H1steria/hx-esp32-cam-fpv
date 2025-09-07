@@ -34,6 +34,12 @@
 
 #include "utils.h"
 
+#ifdef TEST_LATENCY
+extern "C"
+{
+#include "pigpio.h"
+}
+#endif
 /*
 
 Changes on the PI:
@@ -230,6 +236,10 @@ static const Resolution resolutionsList[] = { Resolution::VGA16, Resolution::VGA
 std::unique_ptr<IHAL> s_hal;
 Video_Decoder s_decoder;
 
+#ifdef USE_MAVLINK
+int fdUART = -1;
+std::string serialPortName = isRadxaZero3() ? "/dev/ttyS3" : "/dev/serial0";
+#endif
 
 /* This prints an "Assertion failed" message and aborts.  */
 void __assert_fail(const char* __assertion, const char* __file, unsigned int __line, const char* __function)
@@ -248,6 +258,10 @@ static std::mutex s_ground2air_data_packet_mutex;
 static Ground2Air_Data_Packet s_ground2air_data_packet;
 int s_tlm_size = 0;
 
+#ifdef TEST_LATENCY
+static uint32_t s_test_latency_gpio_value = 0;
+static Clock::time_point s_test_latency_gpio_last_tp = Clock::now();
+#endif
 
 TGroundstationConfig s_groundstation_config;
 
@@ -295,12 +309,6 @@ Stats s_dataSize_stats;
 Stats s_queueUsage_stats;
 
 static AirStats s_last_airStats;
-
-// DHT11 data variables
-float s_dht11_temperature = 0.0f;
-float s_dht11_humidity = 0.0f;
-bool s_dht11_data_valid = false;
-Clock::time_point s_last_dht11_data_tp = Clock::now();
 
 GSStats s_gs_stats;
 GSStats s_last_gs_stats;
@@ -483,14 +491,14 @@ static void comms_thread_proc()
     {
         if (Clock::now() - last_stats_tp >= std::chrono::milliseconds(1000))
         {
-            // LOGI("Sent: {}, RX len: {}, TlmIn: {}, TlmOut: {}, RSSI: {}/{}, Latency: {}/{}/{}, vfps: {}, AIR:0x{:04X}, GS:0x{:04X}", 
-            //     sent_count, total_data, in_tlm_size, out_tlm_size,
-            //     (int)s_last_gs_stats.rssiDbm[0], (int)s_last_gs_stats.rssiDbm[1],
-            //     std::chrono::duration_cast<std::chrono::milliseconds>(ping_min).count(),
-            //     std::chrono::duration_cast<std::chrono::milliseconds>(ping_max).count(),
-            //     ping_count > 0 ? std::chrono::duration_cast<std::chrono::milliseconds>(ping_avg).count() / ping_count : 0,
-            //     video_fps,
-            //     s_connected_air_device_id, s_groundstation_config.deviceId);
+            LOGI("Sent: {}, RX len: {}, TlmIn: {}, TlmOut: {}, RSSI: {}/{}, Latency: {}/{}/{}, vfps: {}, AIR:0x{:04X}, GS:0x{:04X}", 
+                sent_count, total_data, in_tlm_size, out_tlm_size,
+                (int)s_last_gs_stats.rssiDbm[0], (int)s_last_gs_stats.rssiDbm[1],
+                std::chrono::duration_cast<std::chrono::milliseconds>(ping_min).count(),
+                std::chrono::duration_cast<std::chrono::milliseconds>(ping_max).count(),
+                ping_count > 0 ? std::chrono::duration_cast<std::chrono::milliseconds>(ping_avg).count() / ping_count : 0,
+                video_fps,
+                s_connected_air_device_id, s_groundstation_config.deviceId);
 
             s_total_data = total_data;
 
@@ -557,6 +565,88 @@ static void comms_thread_proc()
         }
 
         g_CPUTemp.process();
+
+#ifdef USE_MAVLINK
+        if (fdUART != -1)
+        {
+            std::lock_guard<std::mutex> lg(s_ground2air_data_packet_mutex);
+            auto& data = s_ground2air_data_packet;
+
+            int frb = GROUND2AIR_DATA_MAX_PAYLOAD_SIZE - s_tlm_size;
+            int n = read(fdUART, &(data.payload[s_tlm_size]), frb);
+
+            bool gotRCPacket = false;
+
+            if ( n > 0 )
+            {
+                uint8_t* dPtr = (uint8_t*)(&data.payload[s_tlm_size]);
+                for ( int i = 0; i < n; i++ )
+                {
+                    mavlinkParserIn.processByte(*dPtr++);
+                    if ( mavlinkParserIn.gotPacket())
+                    {
+                        if ( mavlinkParserIn.getMessageId() == HX_MAXLINK_RC_CHANNELS_OVERRIDE)
+                        {
+                            //const HXMAVLinkRCChannelsOverride* msg = mavlinkParserIn.getMsg<HXMAVLinkRCChannelsOverride>();
+                            //LOG("%d %d %d %d\n", msg->chan1_raw, msg->chan2_raw, msg->chan3_raw, msg->chan4_raw);
+                            Clock::time_point t = Clock::now();
+                            int dt = std::chrono::duration_cast<std::chrono::milliseconds>(t - s_last_rc_command).count();
+                            s_last_rc_command = t;
+                            s_gs_stats.RCPeriodMax = std::max(s_gs_stats.RCPeriodMax, dt);
+                            gotRCPacket = true;
+                        }
+                    }
+                }
+
+                s_tlm_size += n;
+                in_tlm_size += n;
+            }
+
+            if ( 
+                (s_tlm_size == GROUND2AIR_DATA_MAX_PAYLOAD_SIZE) ||
+                gotRCPacket ||
+                ( 
+                    ( (s_tlm_size > 0 ) && (Clock::now() - last_data_sent_tp) >= std::chrono::milliseconds(100)) 
+                )
+            )
+            {
+                data.type = Ground2Air_Header::Type::Telemetry;
+                data.size = sizeof(Ground2Air_Header) + s_tlm_size;
+                data.airDeviceId = s_connected_air_device_id;
+                data.gsDeviceId = s_groundstation_config.deviceId;
+                data.crc = 0;  //calculate cc with crc filed = 0
+                data.crc = crc8(0, &data, data.size); 
+                if ( s_got_config_packet ) 
+                {
+                    s_comms.send(&data, data.size, true);
+                    sent_count++;
+                }
+                last_data_sent_tp = Clock::now();
+                s_tlm_size = 0;
+            }
+        }
+#endif
+
+#ifdef TEST_LATENCY
+        if (s_test_latency_gpio_value == 0 && Clock::now() - s_test_latency_gpio_last_tp >= std::chrono::milliseconds(200))
+        {
+            s_test_latency_gpio_value = 1;
+            gpioWrite(17, s_test_latency_gpio_value);
+            s_test_latency_gpio_last_tp = Clock::now();
+#   ifdef TEST_DISPLAY_LATENCY
+            s_decoder.inject_test_data(s_test_latency_gpio_value);
+#   endif
+        }
+        if (s_test_latency_gpio_value != 0 && Clock::now() - s_test_latency_gpio_last_tp >= std::chrono::milliseconds(50))
+        {
+            s_test_latency_gpio_value = 0;
+            gpioWrite(17, s_test_latency_gpio_value);
+            s_test_latency_gpio_last_tp = Clock::now();
+#   ifdef TEST_DISPLAY_LATENCY
+            s_decoder.inject_test_data(s_test_latency_gpio_value);
+#   endif
+        }
+#endif        
 
 #ifdef TEST_DISPLAY_LATENCY
         std::this_thread::yield();
@@ -807,7 +897,41 @@ static void comms_thread_proc()
                 }
 
             }
+            else if (air2ground_header.type == Air2Ground_Header::Type::Telemetry)
+            {
+#ifdef USE_MAVLINK
+              if (fdUART != -1)
+              {
+                if (packet_size > rx_data.size)
+                {
+                    LOGE("Telemetry frame: data too big: {} > {}", packet_size, rx_data.size);
+                    break;
+                }
+                if (packet_size < (sizeof(Air2Ground_Data_Packet) + 1))
+                {
+                    LOGE("Telemetry frame: data too small: {} < {}", packet_size, sizeof(Air2Ground_Data_Packet) + 1);
+                    break;
+                }
 
+                size_t payload_size = packet_size - sizeof(Air2Ground_Data_Packet);
+                Air2Ground_Data_Packet& air2ground_data_packet = *(Air2Ground_Data_Packet*)rx_data.data.data();
+                uint8_t crc = air2ground_data_packet.crc;
+                air2ground_data_packet.crc = 0;
+                uint8_t computed_crc = crc8(0, rx_data.data.data(), sizeof(Air2Ground_Data_Packet));
+                if (crc != computed_crc)
+                {
+                    LOGE("Telemetry frame: crc mismatch {}: {} != {}", payload_size, crc, computed_crc);
+                    break;
+                }
+
+                total_data10 += rx_data.size;
+                //LOGI("OK Telemetry frame {} - CRC OK {}. {}", payload_size, crc, rx_queue.size());
+
+                write(fdUART, ((uint8_t*)&air2ground_data_packet) + sizeof(Air2Ground_Data_Packet), payload_size);
+                out_tlm_size += payload_size;
+              }
+#endif
+            }
             else if (air2ground_header.type == Air2Ground_Header::Type::OSD)
             {
                 if (packet_size > rx_data.size)
@@ -853,45 +977,6 @@ static void comms_thread_proc()
                 g_osd.update( &air2ground_osd_packet.buffer );
 
                 s_last_stats_packet_tp = Clock::now();
-            }
-            else if (air2ground_header.type == Air2Ground_Header::Type::Report)
-            {
-                // Handle Report packets (DHT11 data)
-                if (packet_size > rx_data.size)
-                {
-                    LOGE("Report frame: data too big: {} > {}", packet_size, rx_data.size);
-                    break;
-                }
-                if (packet_size < sizeof(Air2Ground_Report_Packet))
-                {
-                    LOGE("Report frame: data too small: {} > {}", packet_size, sizeof(Air2Ground_Report_Packet));
-                    break;
-                }
-
-                Air2Ground_Report_Packet& air2ground_report_packet = *(Air2Ground_Report_Packet*)rx_data.data.data();
-                uint8_t crc = air2ground_report_packet.crc;
-                air2ground_report_packet.crc = 0;
-                uint8_t computed_crc = crc8(0, rx_data.data.data(), sizeof(Air2Ground_Report_Packet));
-                if (crc != computed_crc)
-                {
-                    LOGE("Report frame: crc mismatch: {} != {}", crc, computed_crc);
-                    break;
-                }
-
-                // Log that we received a report packet
-                LOGI("Received Report packet: Temperature={:.2f}°C, Humidity={:.2f}%, Valid={}", 
-                     air2ground_report_packet.temperature, 
-                     air2ground_report_packet.humidity, 
-                     (int)air2ground_report_packet.data_valid);
-
-                // Update DHT11 data variables
-                s_dht11_temperature = air2ground_report_packet.temperature;
-                s_dht11_humidity = air2ground_report_packet.humidity;
-                s_dht11_data_valid = air2ground_report_packet.data_valid != 0;
-                s_last_dht11_data_tp = Clock::now(); // Update timestamp when data is received
-
-                total_data += rx_data.size;
-                total_data10 += rx_data.size;
             }
             else
             {
@@ -1101,62 +1186,11 @@ int run(char* argv[])
         ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
         ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-        ImGui::Begin("fullscreen", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoNav  | ImGuiWindowFlags_NoFocusOnAppearing);
+        ImGui::Begin("fullscreen", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav  | ImGuiWindowFlags_NoFocusOnAppearing);
         {
-            const float control_panel_width = 220.0f;
-            const ImVec2 display_size = ImGui::GetIO().DisplaySize;
-
-            // Right panel for controls
-            ImGui::SetCursorPosX(display_size.x - control_panel_width);
-            ImGui::BeginChild("ControlPane", ImVec2(control_panel_width, 0), true);
-            {
-                // State for the toggle button
-                static bool gpio_pin_state = false;
-
-                ImGui::Text("Controles");
-                ImGui::Separator();
-
-                // Change button text and color based on state
-                const char* button_text = gpio_pin_state ? "GPIO PIN: ON" : "GPIO PIN: OFF";
-                ImVec4 button_color = gpio_pin_state ? ImVec4(0.2f, 0.7f, 0.2f, 1.0f) : ImVec4(0.8f, 0.2f, 0.2f, 1.0f);
-                ImVec4 hover_color = gpio_pin_state ? ImVec4(0.3f, 0.8f, 0.3f, 1.0f) : ImVec4(0.9f, 0.3f, 0.3f, 1.0f);
-                ImVec4 active_color = gpio_pin_state ? ImVec4(0.1f, 0.6f, 0.1f, 1.0f) : ImVec4(0.7f, 0.1f, 0.1f, 1.0f);
-
-                ImGui::PushStyleColor(ImGuiCol_Button, button_color);
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hover_color);
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive, active_color);
-
-                if (ImGui::Button(button_text, ImVec2(-1, 50))) // -1 width = fill available space
-                {
-                    gpio_pin_state = !gpio_pin_state; // Toggle the state
-                    
-                    if ( s_connected_air_device_id != 0 )
-                    {
-                        // Immediately send a control packet with the updated state
-                        Ground2Air_Control_Packet packet_to_send;
-                        packet_to_send.command = gpio_pin_state ? CMD_FLASH : CMD_NONE;
-                        packet_to_send.type = Ground2Air_Header::Type::Control;
-                        packet_to_send.size = sizeof(packet_to_send);
-                        packet_to_send.airDeviceId = s_connected_air_device_id;
-                        packet_to_send.gsDeviceId = s_groundstation_config.deviceId;
-                        packet_to_send.crc = 0;
-                        packet_to_send.crc = crc8(0, &packet_to_send, sizeof(packet_to_send));
-                        LOGI("Sending {} command to air device 0x{:04X}", gpio_pin_state ? "CMD_FLASH" : "CMD_NONE", s_connected_air_device_id);
-                        s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
-                    }
-                }
-
-                ImGui::PopStyleColor(3);
-            }
-            ImGui::EndChild();
-
-            // Left panel container
-            ImGui::SetCursorPos(ImVec2(0,0));
-            ImGui::BeginChild("LeftPanel", ImVec2(display_size.x - control_panel_width, 0), false);
 
             g_osd.draw();
 
-            // Status bar
             {
                 //RC RSSI
                 char buf[32];
@@ -1400,23 +1434,6 @@ int run(char* argv[])
                 ImGui::PopID();
             }
 
-            // Display DHT11 data in status bar
-            // Show data if valid and received within last 10 seconds, otherwise show "N/A"
-            char buf[64];
-            if (s_dht11_data_valid && (Clock::now() - s_last_dht11_data_tp < std::chrono::seconds(10))) {
-                sprintf(buf, "%.1f°C %.1f%%", s_dht11_temperature, s_dht11_humidity);
-            } else {
-                sprintf(buf, "N/A");
-            }
-            ImGui::SameLine();
-            ImGui::PushID(0);
-            ImGui::PushStyleColor(ImGuiCol_Button, (ImVec4)ImColor::HSV(0 / 7.0f, 0, 0.6f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, (ImVec4)ImColor::HSV(0 / 7.0f, 0.0f, 0.6f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, (ImVec4)ImColor::HSV(0 / 7.0f, 0.0f, 0.6f));
-            ImGui::Button(buf, ImVec2(120.0f, 0));
-            ImGui::PopStyleColor(3);
-            ImGui::PopID();
-
             if ( s_groundstation_config.stats )
             {
                 char overlay[32];
@@ -1529,7 +1546,43 @@ int run(char* argv[])
                         ImGui::Text("%.1f,%.1f%%", calcLossRatio(s_last_airStats.outPacketRate, s_last_gs_stats.inPacketCounter[0]),
                             calcLossRatio(s_last_airStats.outPacketRate, s_last_gs_stats.inPacketCounter[1]));
                     }
+/*
+                    {
+                        ImGui::TableNextRow();
+                        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, c );
 
+                        ImGui::TableSetColumnIndex(0);
+                        ImGui::Text("GSExpectedPktRate");
+
+                        ImGui::TableSetColumnIndex(1);
+
+                        ImGui::Text("%d", (s_last_gs_stats.lastPacketIndex - s_last_gs_stats.statsPacketIndex) /12 * config.dataChannel.fec_codec_n);
+                    }
+
+                    {
+                        ImGui::TableNextRow();
+                        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, c );
+
+                        ImGui::TableSetColumnIndex(0);
+                        ImGui::Text("GSUniquePktRate");
+
+                        ImGui::TableSetColumnIndex(1);
+
+                        ImGui::Text("%d", s_last_gs_stats.inUniquePacketCounter);
+                    }
+
+                    {
+                        ImGui::TableNextRow();
+                        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, c );
+
+                        ImGui::TableSetColumnIndex(0);
+                        ImGui::Text("GSDublicatedPktRate");
+
+                        ImGui::TableSetColumnIndex(1);
+
+                        ImGui::Text("%d", s_last_gs_stats.inDublicatedPacketCounter);
+                    }
+*/
                     {
                         ImGui::TableNextRow();
                         ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, c );
@@ -1541,7 +1594,21 @@ int run(char* argv[])
 
                         ImGui::Text("%.1f%%", calcLossRatio((s_last_gs_stats.lastPacketIndex - s_last_gs_stats.statsPacketIndex)/12*config.dataChannel.fec_codec_n, s_last_gs_stats.inUniquePacketCounter));
                     }
+/*
+                    {
+                        ImGui::TableNextRow();
+                        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, c );
 
+                        ImGui::TableSetColumnIndex(0);
+                        ImGui::Text("FECSuccIndex");
+
+                        ImGui::TableSetColumnIndex(1);
+
+                        uint32_t blocksCount = s_last_gs_stats.FECBlocksCounter;
+                        if ( blocksCount == 0 ) blocksCount = 1;
+                        ImGui::Text("%.1f", s_last_gs_stats.FECSuccPacketIndexCounter * 1.0f / blocksCount);
+                    }
+*/
                     {
                         ImGui::TableNextRow();
                         ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, c );
@@ -1607,6 +1674,19 @@ int run(char* argv[])
                         ImGui::TableSetColumnIndex(1);
                         ImGui::Text("%d dbm", s_last_gs_stats.noiseFloorDbm);
                     }
+
+/*
+                    {
+                        ImGui::TableNextRow();
+                        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, c );
+
+                        ImGui::TableSetColumnIndex(0);
+                        ImGui::Text("GS SNR");
+
+                        ImGui::TableSetColumnIndex(1);
+                        ImGui::Text("%d db", -((int)s_last_gs_stats.noiseFloorDbm - s_last_gs_stats.rssiDbm) );
+                    }
+*/
 
                     {
                         ImGui::TableNextRow();
@@ -1788,11 +1868,9 @@ int run(char* argv[])
 
             }
 
-            
-        ImGui::EndChild(); // End LeftPanel
-        ImGui::PopStyleVar();
         }
         ImGui::End();
+        ImGui::PopStyleVar(2);
 
         //------------ osd menu
         g_osdMenu.draw(config);
@@ -2086,72 +2164,14 @@ int run(char* argv[])
             ImGui::End();
         } //debug window
         
-        if ( ImGui::IsKeyPressed(ImGuiKey_O) || ImGui::IsKeyPressed(ImGuiKey_MouseMiddle))
+        if ( ImGui::IsKeyPressed(ImGuiKey_D) || ImGui::IsKeyPressed(ImGuiKey_MouseMiddle))
         {
             s_debugWindowVisisble = !s_debugWindowVisisble;
         }
 
-        if ( ImGui::IsKeyPressed(ImGuiKey_P))
+        if ( ImGui::IsKeyPressed(ImGuiKey_S))
         {
             s_groundstation_config.stats = !s_groundstation_config.stats;
-        }
-
-        // Handle movement keys (W, A, S, D) and flash key (F)
-        if ( ImGui::IsKeyPressed(ImGuiKey_W) && s_connected_air_device_id != 0 )
-        {
-            // Send forward command
-            Ground2Air_Control_Packet packet_to_send;
-            packet_to_send.command = CMD_FORWARD;
-            packet_to_send.type = Ground2Air_Header::Type::Control;
-            packet_to_send.size = sizeof(packet_to_send);
-            packet_to_send.airDeviceId = s_connected_air_device_id;
-            packet_to_send.gsDeviceId = s_groundstation_config.deviceId;
-            packet_to_send.crc = 0;
-            packet_to_send.crc = crc8(0, &packet_to_send, sizeof(packet_to_send));
-            LOGI("Sending CMD_FORWARD command to air device 0x{:04X}", s_connected_air_device_id);
-            s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
-        }
-        else if ( ImGui::IsKeyPressed(ImGuiKey_S) && s_connected_air_device_id != 0 )
-        {
-            // Send backward command
-            Ground2Air_Control_Packet packet_to_send;
-            packet_to_send.command = CMD_BACKWARD;
-            packet_to_send.type = Ground2Air_Header::Type::Control;
-            packet_to_send.size = sizeof(packet_to_send);
-            packet_to_send.airDeviceId = s_connected_air_device_id;
-            packet_to_send.gsDeviceId = s_groundstation_config.deviceId;
-            packet_to_send.crc = 0;
-            packet_to_send.crc = crc8(0, &packet_to_send, sizeof(packet_to_send));
-            LOGI("Sending CMD_BACKWARD command to air device 0x{:04X}", s_connected_air_device_id);
-            s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
-        }
-        else if ( ImGui::IsKeyPressed(ImGuiKey_A) && s_connected_air_device_id != 0 )
-        {
-            // Send left command
-            Ground2Air_Control_Packet packet_to_send;
-            packet_to_send.command = CMD_LEFT;
-            packet_to_send.type = Ground2Air_Header::Type::Control;
-            packet_to_send.size = sizeof(packet_to_send);
-            packet_to_send.airDeviceId = s_connected_air_device_id;
-            packet_to_send.gsDeviceId = s_groundstation_config.deviceId;
-            packet_to_send.crc = 0;
-            packet_to_send.crc = crc8(0, &packet_to_send, sizeof(packet_to_send));
-            LOGI("Sending CMD_LEFT command to air device 0x{:04X}", s_connected_air_device_id);
-            s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
-        }
-        else if ( ImGui::IsKeyPressed(ImGuiKey_D) && s_connected_air_device_id != 0 )
-        {
-            // Send right command
-            Ground2Air_Control_Packet packet_to_send;
-            packet_to_send.command = CMD_RIGHT;
-            packet_to_send.type = Ground2Air_Header::Type::Control;
-            packet_to_send.size = sizeof(packet_to_send);
-            packet_to_send.airDeviceId = s_connected_air_device_id;
-            packet_to_send.gsDeviceId = s_groundstation_config.deviceId;
-            packet_to_send.crc = 0;
-            packet_to_send.crc = crc8(0, &packet_to_send, sizeof(packet_to_send));
-            LOGI("Sending CMD_RIGHT command to air device 0x{:04X}", s_connected_air_device_id);
-            s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
         }
 
         bool resetRes = false;
@@ -2285,6 +2305,56 @@ int run(char* argv[])
 
     return 0;
 }
+
+#ifdef USE_MAVLINK
+//===================================================================================
+//===================================================================================
+bool init_uart()
+{
+    fdUART = open(serialPortName.c_str(), O_RDWR);
+    if (fdUART == -1)
+    {
+      printf("Warning: Can not open serial port %s. Telemetry will not be available.\n", serialPortName.c_str());
+      return false;
+    }
+
+    struct termios tty;
+    if(tcgetattr(fdUART, &tty) != 0) 
+    {
+      printf("Error %i from tcgetattr: %s\n", errno, strerror(errno));
+      return false;
+    }
+
+    tty.c_cflag &= ~PARENB;
+    tty.c_cflag &= ~CSTOPB;
+    tty.c_cflag &= ~CSIZE;
+    tty.c_cflag |= CS8;
+    tty.c_cflag &= ~CRTSCTS;
+    tty.c_cflag |= CREAD | CLOCAL;
+    tty.c_lflag &= ~ICANON;
+    tty.c_lflag &= ~ECHO;
+    tty.c_lflag &= ~ECHOE;
+    tty.c_lflag &= ~ECHONL;
+    tty.c_lflag &= ~ISIG;
+    tty.c_iflag &= ~(IXON | IXOFF | IXANY);
+    tty.c_iflag &= ~(IGNBRK|BRKINT|PARMRK|ISTRIP|INLCR|IGNCR|ICRNL);
+    tty.c_oflag &= ~OPOST;
+    tty.c_oflag &= ~ONLCR;
+    tty.c_cc[VTIME] = 0;
+    tty.c_cc[VMIN] = 0;
+    
+    cfsetispeed(&tty, B115200);
+    cfsetospeed(&tty, B115200);
+  
+    if (tcsetattr(fdUART, TCSANOW, &tty) != 0) 
+    {
+      printf("Error %i from tcsetattr: %s\n", errno, strerror(errno));
+      return false;
+    }
+
+    return true;
+}
+#endif 
 
 //===================================================================================
 //===================================================================================
@@ -2665,7 +2735,14 @@ int main(int argc, const char* argv[])
             tx_descriptor.interface = next; 
             i++;
         }
-
+#ifdef USE_MAVLINK
+        else if(temp=="-serial")
+        {
+            check_argval("serial");
+            serialPortName = next; 
+            i++;
+        }
+#endif
         else if(temp=="-p")
         {
             check_argval_int("port");
@@ -2733,6 +2810,11 @@ int main(int argc, const char* argv[])
             printf("-fullscreen <1/0>, default: 1\n");
             printf("-vsync <1/0>, default: 1\n");
             printf("-sm <1/0>, skip setting monitor mode with pcap, default: 1\n");
+#ifdef USE_MAVLINK
+            printf("-serial <serial_port>, serial port for telemetry, default: ");
+            printf(serialPortName.c_str());
+            printf("\n");
+#endif            
             printf("-help\n");
             return 0;
         }
@@ -2781,6 +2863,10 @@ int main(int argc, const char* argv[])
     tx_descriptor.coding_n = 3;
     tx_descriptor.mtu = GROUND2AIR_DATA_MAX_SIZE;
 
+#ifdef USE_MAVLINK
+    init_uart();
+#endif
+
 #ifdef WRITE_RAW_MJPEG_STREAM
 #else
     prepAviBuffers();
@@ -2801,6 +2887,10 @@ int main(int argc, const char* argv[])
 
     if (!s_hal->init())
         return -1;
+
+#ifdef TEST_LATENCY
+    gpioSetMode(17, PI_OUTPUT);
+#endif
 
     if (!s_comms.init(rx_descriptor, tx_descriptor))
     {

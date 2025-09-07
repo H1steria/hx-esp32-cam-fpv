@@ -2,6 +2,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "driver/gpio.h"
+#include "string.h"
 #include "i2c_handler.h"
 #include "motor.h"
 #include "dht11.h"
@@ -12,6 +13,7 @@
 #define I2C_CMD_RIGHT 3
 #define I2C_CMD_LEFT 4
 #define I2C_CMD_FLASH 5
+#define I2C_CMD_GET_DHT11_DATA 6  // New command to request DHT11 data
 
 static const char *TAG = "MAIN";
 
@@ -29,21 +31,28 @@ static const char *TAG = "MAIN";
 // DHT11 sensor instance
 dht11_sensor_t dht11_sensor;
 
+// Global variables to store latest DHT11 readings
+static float s_dht11_humidity = 0.0;
+static float s_dht11_temperature = 0.0;
+static bool s_dht11_data_valid = false;
+static TickType_t s_last_dht11_read_time = 0;
+
 // Function to send DHT11 data via I2C
 void send_dht11_data(float humidity, float temperature) {
     // For now, just log the data
     ESP_LOGI(TAG, "DHT11 Data - Humidity: %.1f%%, Temperature: %.1f°C", humidity, temperature);
-    
-    // TODO: Implement actual I2C sending to air unit
-    // This would require implementing I2C master functionality
-    // to send data to the air unit
 }
 
 // DHT11 reading task
 void dht11_task(void *pvParameter) {
     float humidity, temperature;
     
+    ESP_LOGI(TAG, "DHT11 Task started");
+    
     while (1) {
+        TickType_t start_time = xTaskGetTickCount();
+        ESP_LOGI(TAG, "DHT11 Task - Reading sensor data");
+        
         // Read data from the sensor
         esp_err_t read_result = dht11_read(&dht11_sensor, &humidity, &temperature);
         
@@ -51,15 +60,50 @@ void dht11_task(void *pvParameter) {
             // Print the values
             dht11_print_values(humidity, temperature);
             
+            // Store data in global variables
+            s_dht11_humidity = humidity;
+            s_dht11_temperature = temperature;
+            s_dht11_data_valid = true;
+            s_last_dht11_read_time = xTaskGetTickCount();
+            
+            TickType_t end_time = xTaskGetTickCount();
+            ESP_LOGI(TAG, "DHT11 Task - Read successful: H=%.1f%%, T=%.1f°C (took %d ms)", 
+                     humidity, temperature, (int)((end_time - start_time) * portTICK_PERIOD_MS));
+            
             // Send data via I2C
             send_dht11_data(humidity, temperature);
         } else {
-            ESP_LOGE(TAG, "Failed to read data from DHT11 sensor");
+            ESP_LOGE(TAG, "DHT11 Task - Failed to read data from DHT11 sensor: %s", esp_err_to_name(read_result));
+            s_dht11_data_valid = false;
         }
         
-        // Wait for 2 seconds before next reading
-        vTaskDelay(2000 / portTICK_PERIOD_MS);
+        // Wait for 5 seconds before next reading (matching air unit's report interval)
+        ESP_LOGI(TAG, "DHT11 Task - Waiting 5 seconds before next reading");
+        vTaskDelay(5000 / portTICK_PERIOD_MS);
     }
+}
+
+// Function to send DHT11 data to I2C master
+void send_dht11_data_to_master() {
+    // Prepare data packet: [command_id, humidity_float_bytes(4), temperature_float_bytes(4), valid_flag]
+    uint8_t data_packet[10];
+    data_packet[0] = I2C_CMD_GET_DHT11_DATA;  // Command ID
+    
+    // Copy float values as bytes
+    memcpy(&data_packet[1], &s_dht11_humidity, sizeof(float));
+    memcpy(&data_packet[5], &s_dht11_temperature, sizeof(float));
+    
+    // Valid flag
+    data_packet[9] = s_dht11_data_valid ? 1 : 0;
+    
+    // Send data packet
+    // Note: In slave mode, we can't directly send data. The master will read from our buffer.
+    // We'll store the data in the receivedData buffer for the master to read.
+    memcpy(receivedData, data_packet, sizeof(data_packet));
+    dataIndex = sizeof(data_packet);
+    
+    ESP_LOGI(TAG, "DHT11 I2C Response - Prepared data packet for master: H=%.1f%%, T=%.1f°C, Valid=%d", 
+             s_dht11_humidity, s_dht11_temperature, s_dht11_data_valid);
 }
 
 extern "C" void app_main() {    
@@ -112,6 +156,10 @@ extern "C" void app_main() {
                     case I2C_CMD_FLASH:
                         // Flash command - not implemented for motor control
                         ESP_LOGI(TAG, "Comando FLASH recibido - sin acción en motores");
+                        break;
+                    case I2C_CMD_GET_DHT11_DATA:
+                        // Send DHT11 data to master
+                        send_dht11_data_to_master();
                         break;
                     default:
                         // Unknown command - stop motors
