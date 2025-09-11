@@ -7,8 +7,6 @@
 #include "crc.h"
 #include "lwip/inet.h"
 
-#include "vcd_profiler.h"
-
 static const char * TAG="wifi_task";
 
 #define TX_COMPLETION_CB

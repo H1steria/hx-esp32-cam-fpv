@@ -1,12 +1,16 @@
 #include "i2c_handler.h"
 #include "esp_log.h"
 #include "driver/gpio.h"
+#include "string.h"
 
 static const char *TAG = "I2C_SLAVE";
 
 // Buffer para almacenar datos recibidos
 uint8_t receivedData[BUF_SIZE];
 int dataIndex = 0;
+
+// DHT11 data buffer
+uint8_t s_dht11_data_buffer[9]; // 4 bytes humidity + 4 bytes temperature + 1 byte valid flag
 
 esp_err_t init_i2c_slave() {
     i2c_config_t conf = {
@@ -29,6 +33,7 @@ esp_err_t init_i2c_slave() {
         return ret;
     }
     
+    // Install driver with larger RX buffer for read operations
     ret = i2c_driver_install(I2C_SLAVE_PORT, conf.mode, BUF_SIZE, BUF_SIZE, 0);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Error instalando driver: %s", esp_err_to_name(ret));
@@ -41,8 +46,19 @@ esp_err_t init_i2c_slave() {
     return ESP_OK;
 }
 
+// Function to update DHT11 data in the buffer for transmission
+void update_dht11_data_buffer(float humidity, float temperature, bool data_valid) {
+    // Copy float values as bytes to the buffer
+    memcpy(&s_dht11_data_buffer[0], &humidity, sizeof(float));
+    memcpy(&s_dht11_data_buffer[4], &temperature, sizeof(float));
+    s_dht11_data_buffer[8] = data_valid ? 1 : 0;
+    
+    ESP_LOGI(TAG, "DHT11 data buffer updated - H=%.1f%%, T=%.1f°C, Valid=%d", 
+             humidity, temperature, data_valid);
+}
+
 void i2c_slave_task(void *pvParameter) {
-    ESP_LOGI(TAG, "Slave listo para recibir datos...");
+    ESP_LOGI(TAG, "Slave ready to receive data...");
     
     while (1) {
         // Leer datos del master (operación de escritura del master)

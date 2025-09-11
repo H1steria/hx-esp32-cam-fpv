@@ -573,7 +573,7 @@ static esp_err_t delete_post_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    updateSDInfo();
+    // updateSDInfo();
 
     httpd_resp_set_type(req, "application/json");
     cJSON *response_json = cJSON_CreateObject();
@@ -600,7 +600,7 @@ static esp_err_t delete_post_handler(httpd_req_t *req)
 
 static esp_err_t file_list_handler(httpd_req_t *req)
 {
-    updateSDInfo();
+    // updateSDInfo();
 
     cJSON *root;
     root = cJSON_CreateObject();

@@ -51,14 +51,10 @@
 #include "msp.h"
 #include "avi.h"
 
-#include "vcd_profiler.h"
-
 #include "jpeg_parser.h"
 #include "util.h"
 
 #include "hx_mavlink_parser.h"
-
-#include "temperature_sensor.h"
 
 static int s_stats_last_tp = -10000;
 static int s_last_osd_packet_tp = -10000;
@@ -109,9 +105,6 @@ int32_t s_dbg;
 uint16_t s_framesCounter = 0;
 
 static bool s_initialized = false;
-
-// DHT11 task handle
-static TaskHandle_t s_dht11_task_handle = NULL;
 
 static uint16_t s_air_device_id;
 static uint16_t s_connected_gs_device_id = 0;
@@ -216,19 +209,6 @@ void send_i2c_command(uint8_t command)
         }
     }
 
-    // Check if camera is actively capturing frames, if so, delay I2C communication
-    // Use a task notification to check if camera task is running instead of busy waiting
-    if (s_video_frame_started) {
-        // Add a small delay to allow camera operations to complete
-        vTaskDelay(10 / portTICK_PERIOD_MS);
-        
-        // Check again after delay
-        if (s_video_frame_started) {
-            // Camera is still busy, delay more
-            vTaskDelay(20 / portTICK_PERIOD_MS);
-        }
-    }
-
     i2c_cmd_handle_t cmd = i2c_cmd_link_create();
     i2c_master_start(cmd);
     i2c_master_write_byte(cmd, (I2C_SLAVE_ADDR << 1) | I2C_MASTER_WRITE, true);
@@ -255,24 +235,10 @@ void send_i2c_command(uint8_t command)
     }
 }
 
-// Function to read DHT11 data from I2C slave with timeout and priority handling
+// Function to read DHT11 data from I2C slave
 esp_err_t read_dht11_data(float* humidity, float* temperature) {
     TickType_t start_time = xTaskGetTickCount();
     
-    // Check if camera is actively capturing frames, if so, delay DHT11 reading
-    if (s_video_frame_started) {
-        LOG("DHT11 Read - Camera busy, delaying read\n");
-        // Add a small delay to allow camera operations to complete
-        vTaskDelay(5 / portTICK_PERIOD_MS);
-        
-        // Check again after delay
-        if (s_video_frame_started) {
-            // Camera is still busy, delay more
-            LOG("DHT11 Read - Camera still busy, additional delay\n");
-            vTaskDelay(10 / portTICK_PERIOD_MS);
-        }
-    }
-
     if (!s_i2c_initialized) {
         LOG("DHT11 Read - I2C not initialized, initializing\n");
         initialize_i2c();
@@ -282,96 +248,49 @@ esp_err_t read_dht11_data(float* humidity, float* temperature) {
         }
     }
 
-    uint8_t command = I2C_CMD_GET_DHT11_DATA; // DHT11 data command
-    uint8_t data_buffer[10]; // 1 byte for command + 4 bytes for humidity + 4 bytes for temperature + 1 byte for valid flag
+    uint8_t data_buffer[9]; // 4 bytes for humidity + 4 bytes for temperature + 1 byte for valid flag
 
-    // Create a timeout for the entire operation
-    TickType_t timeout_start = xTaskGetTickCount();
-    const TickType_t max_operation_time = pdMS_TO_TICKS(100); // 100ms max for DHT11 operation
-
-    LOG("DHT11 Read - Sending request command to auxiliary unit\n");
-    
-    // Send command to request DHT11 data
+    // Read data from slave
     i2c_cmd_handle_t cmd = i2c_cmd_link_create();
     i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (I2C_SLAVE_ADDR << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, command, true);
-    i2c_master_stop(cmd);
-    
-    // Use a shorter timeout for better responsiveness
-    esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(30));
-    i2c_cmd_link_delete(cmd);
-    
-    // Check if we've exceeded our time budget
-    if ((xTaskGetTickCount() - timeout_start) > max_operation_time) {
-        LOG("DHT11 Read - Command send timeout (took %d ms)\n", 
-            (int)((xTaskGetTickCount() - timeout_start) * portTICK_PERIOD_MS));
-        return ESP_ERR_TIMEOUT;
-    }
-    
-    if (ret != ESP_OK) {
-        LOG("DHT11 Read - Failed to send command, error: %s\n", esp_err_to_name(ret));
-        return ret;
-    }
-
-    LOG("DHT11 Read - Command sent successfully, waiting for data preparation\n");
-    
-    // Check again if we should yield to camera operations
-    if (s_video_frame_started) {
-        LOG("DHT11 Read - Camera busy during wait, yielding\n");
-        vTaskDelay(1 / portTICK_PERIOD_MS);
-    }
-
-    // Small delay to allow auxiliary unit to prepare data
-    vTaskDelay(2 / portTICK_PERIOD_MS);
-
-    LOG("DHT11 Read - Reading data from auxiliary unit\n");
-    
-    // Read data from slave
-    cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
     i2c_master_write_byte(cmd, (I2C_SLAVE_ADDR << 1) | I2C_MASTER_READ, true);
-    i2c_master_read(cmd, data_buffer, 10, I2C_MASTER_LAST_NACK);
+    i2c_master_read(cmd, data_buffer, sizeof(data_buffer), I2C_MASTER_LAST_NACK);
     i2c_master_stop(cmd);
     
-    ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(30));
+    esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(100));
     i2c_cmd_link_delete(cmd);
     
-    // Check if we've exceeded our time budget
-    if ((xTaskGetTickCount() - timeout_start) > max_operation_time) {
-        LOG("DHT11 Read - Data read timeout (took %d ms)\n", 
-            (int)((xTaskGetTickCount() - timeout_start) * portTICK_PERIOD_MS));
-        return ESP_ERR_TIMEOUT;
+    if (ret == ESP_OK) {
+        // Log raw data for debugging
+        LOG("DHT11 Read - Raw data received: ");
+        for (int j = 0; j < sizeof(data_buffer); j++) {
+            LOG("%02X ", data_buffer[j]);
+        }
+        LOG("\n");
+
+        // Check data validity flag (last byte)
+        if (data_buffer[8] == 0) {
+            LOG("DHT11 Read - Data not valid from auxiliary unit\n");
+            LOG("%d-%d\n",data_buffer[7], data_buffer[8]);
+            return ESP_ERR_INVALID_STATE;
+        }
+
+        // Convert bytes to float values
+        memcpy(humidity, &data_buffer[0], sizeof(float));
+        memcpy(temperature, &data_buffer[4], sizeof(float));
+        
+        TickType_t end_time = xTaskGetTickCount();
+        LOG("DHT11 Read - Success: H=%d%%, T=%d°C (took %d ms)\n", 
+            (int)(*humidity), (int)(*temperature), (int)((end_time - start_time) * portTICK_PERIOD_MS));
+
+        return ESP_OK;
     }
     
-    if (ret != ESP_OK) {
-        LOG("DHT11 Read - Failed to read data, error: %s\n", esp_err_to_name(ret));
-        return ret;
-    }
-
-    // Check if the first byte is the DHT11 data command
-    if (data_buffer[0] != I2C_CMD_GET_DHT11_DATA) {
-        LOG("DHT11 Read - Invalid command received: 0x%02X, expected: 0x%02X\n", 
-            data_buffer[0], I2C_CMD_GET_DHT11_DATA);
-        return ESP_ERR_INVALID_RESPONSE;
-    }
-
-    // Check data validity flag
-    if (data_buffer[9] == 0) {
-        LOG("DHT11 Read - Data not valid from auxiliary unit\n");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    // Convert bytes to float values
-    memcpy(humidity, &data_buffer[1], sizeof(float));
-    memcpy(temperature, &data_buffer[5], sizeof(float));
-    
-    TickType_t end_time = xTaskGetTickCount();
-    LOG("DHT11 Read - Success: H=%.2f%%, T=%.2f°C (took %d ms)\n", 
-        *humidity, *temperature, (int)((end_time - start_time) * portTICK_PERIOD_MS));
-
-    return ESP_OK;
+    LOG("DHT11 Read - Failed to read data, error: %s\n", esp_err_to_name(ret));
+    s_i2c_initialized = false;
+    return ret;
 }
+
 
 //=============================================================================================
 //=============================================================================================
@@ -429,52 +348,6 @@ IRAM_ATTR uint64_t millis()
 {
     return esp_timer_get_time() / 1000ULL;
 }
-
-//=============================================================================================
-//=============================================================================================
-// DHT11 task to read sensor data when camera is not busy
-void dht11_task(void* pvParameters)
-{
-    // Set this task to the lowest priority to minimize interference with camera operations
-    vTaskPrioritySet(NULL, tskIDLE_PRIORITY + 1);
-    
-    // Use a longer initial delay to ensure camera is fully initialized
-    vTaskDelay(5000 / portTICK_PERIOD_MS);
-    
-    while (1) 
-    {
-        // Wait for 5 seconds
-        vTaskDelay(5000 / portTICK_PERIOD_MS);
-        
-        // Check if camera is busy, if so, wait until it's not
-        // But don't wait indefinitely - we want to send periodic updates
-        int wait_count = 0;
-        while (s_video_frame_started && wait_count < 20) { // Max 1 second wait
-            // Camera is busy, wait a bit and check again
-            vTaskDelay(50 / portTICK_PERIOD_MS);
-            wait_count++;
-        }
-        
-        // Read DHT11 data with timeout to prevent blocking
-        float humidity, temperature;
-        esp_err_t result = read_dht11_data(&humidity, &temperature);
-        
-        if (result == ESP_OK) 
-        {
-            // Update global variables
-            s_dht11_humidity = humidity;
-            s_dht11_temperature = temperature;
-            s_dht11_data_valid = true;
-            LOG("DHT11 data - Humidity: %.2f%%, Temperature: %.2f°C\n", humidity, temperature);
-        } 
-        else 
-        {
-            s_dht11_data_valid = false;
-            LOG("Failed to read DHT11 data: %s\n", esp_err_to_name(result));
-        }
-    }
-}
-
 //=============================================================================================
 //=============================================================================================
 void set_status_led(bool enabled)
@@ -502,51 +375,6 @@ bool getButtonState()
 #endif
 
     return false;
-}
-
-//=============================================================================================
-//=============================================================================================
-void checkButton()
-{
-  static uint32_t debounceTime = millis() + 100;
-  static bool lastButtonState = false;
-
-  if ( debounceTime > millis() ) return;
-  bool buttonState = getButtonState();
-  debounceTime = millis() + 10;
-  if ( buttonState != lastButtonState )
-  {
-    debounceTime = millis() + 100;
-    lastButtonState = buttonState;
-
-    if ( buttonState )
-    {
-        if ( s_restart_time == 0 )
-        {
-#if defined(ENABLE_PROFILER) && defined (START_PROFILER_WITH_BUTTON)
-            if ( s_profiler.isActive())
-            {
-                LOG("Profiler stopped!\n");
-                s_profiler.stop();
-                s_profiler.save();
-                s_profiler.clear();
-            }
-            else
-            {
-                LOG("Profiler started!\n");
-                s_profiler.start(1000);
-            }
-#else
-            s_air_record = !s_air_record;
-#endif            
-        }
-        LOG("Button pressed!\n");
-    }
-    else
-    {
-        LOG("Button unpressed!\n");
-    }
-  }
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -729,45 +557,6 @@ static void handle_ground2air_config_packetEx1(Ground2Air_Config_Packet& src)
             s_air_record = !s_air_record;
             //dst.dataChannel.air_record_btn = src.dataChannel.air_record_btn;
         }
-
-
-
-
-#if defined(ENABLE_PROFILER)
-        if ( dst.dataChannel.profile1_btn != src.dataChannel.profile1_btn )
-        {
-            if ( s_profiler.isActive())
-            {
-                LOG("Profiler stopped!\n");
-                s_profiler.stop();
-                s_profiler.save();
-                s_profiler.clear();
-            }
-            else
-            {
-                LOG("Profiler started!\n");
-                s_profiler.start(500);
-            }
-            dst.dataChannel.profile1_btn = src.dataChannel.profile2_btn;
-        }
-
-        if ( dst.dataChannel.profile2_btn != src.dataChannel.profile2_btn )
-        {
-            if ( s_profiler.isActive())
-            {
-                LOG("Profiler stopped!\n");
-                s_profiler.stop();
-                s_profiler.save();
-                s_profiler.clear();
-            }
-            else
-            {
-                LOG("Profiler started!\n");
-                s_profiler.start(3000);
-            }
-            dst.dataChannel.profile2_btn = src.dataChannel.profile2_btn;
-        }
-#endif
     }
 
     dst = src;
@@ -1191,9 +980,6 @@ IRAM_ATTR void send_air2ground_video_packet(bool last)
     {
         LOG("Fec codec busy\n");
         s_stats.wlan_error_count++;
-#ifdef PROFILE_CAMERA_DATA    
-        s_profiler.toggle(PF_CAMERA_FEC_OVF);
-#endif
     }
 }
 
@@ -1253,9 +1039,6 @@ IRAM_ATTR void send_air2ground_data_packet()
     {
         LOG("Fec codec busy\n");
         s_stats.wlan_error_count++;
-#ifdef PROFILE_CAMERA_DATA
-        s_profiler.toggle(PF_CAMERA_FEC_OVF);
-#endif
     }
     else
     {
@@ -1362,9 +1145,6 @@ IRAM_ATTR void send_air2ground_osd_packet()
     {
         LOG("Fec codec busy\n");
         s_stats.wlan_error_count++;
-#ifdef PROFILE_CAMERA_DATA    
-        s_profiler.toggle(PF_CAMERA_FEC_OVF);
-#endif
     }
 }
 
@@ -1395,12 +1175,8 @@ IRAM_ATTR void send_air2ground_config_packet()
     {
         LOG("Fec codec busy\n");
         s_stats.wlan_error_count++;
-#ifdef PROFILE_CAMERA_DATA    
-        s_profiler.toggle(PF_CAMERA_FEC_OVF);
-#endif
     }
 }
-
 //=============================================================================================
 //=============================================================================================
 IRAM_ATTR void send_air2ground_report_packet()
@@ -1432,12 +1208,37 @@ IRAM_ATTR void send_air2ground_report_packet()
     {
         LOG("Fec codec busy\n");
         s_stats.wlan_error_count++;
-#ifdef PROFILE_CAMERA_DATA    
-        s_profiler.toggle(PF_CAMERA_FEC_OVF);
-#endif
     }
 }
 
+IRAM_ATTR void handle_dht11_read_and_send()
+{
+    // Only proceed if 5 seconds have passed since the last report packet was sent
+    if (millis() - s_last_report_packet_tp > 5000) {
+        float dht11_humidity_local = 0.0;
+        float dht11_temperature_local = 0.0;
+        
+        esp_err_t result = read_dht11_data(&dht11_humidity_local, &dht11_temperature_local);
+        if (result == ESP_OK) {
+            s_dht11_humidity = dht11_humidity_local;
+            s_dht11_temperature = dht11_temperature_local;
+            s_dht11_data_valid = true;
+            LOG("DHT11 data - Humidity: %d%%, Temperature: %d°C\n", (int)dht11_humidity_local, (int)dht11_temperature_local);
+        } else {
+            s_dht11_data_valid = false;
+            LOG("Failed to read DHT11 data: %s\n", esp_err_to_name(result));
+        }
+
+        // Always attempt to send the report packet if connected, regardless of read success
+        // The data_valid flag in the packet will indicate if the data is fresh/valid
+        if (s_connected_gs_device_id != 0) {
+            send_air2ground_report_packet();
+        }
+        s_last_report_packet_tp = millis(); // Reset timer after a full cycle (read attempt + send attempt)
+    }
+}
+//=============================================================================================
+//=============================================================================================
 constexpr size_t MAX_VIDEO_DATA_PAYLOAD_SIZE = AIR2GROUND_MTU - sizeof(Air2Ground_Video_Packet);
 
 static const int WifiRateBandwidth[] = 
@@ -1697,17 +1498,10 @@ IRAM_ATTR size_t camera_data_available(void * cam_obj,const uint8_t* data, size_
 {
     if ( !s_initialized ) return count;
 
-#ifdef PROFILE_CAMERA_DATA    
-    s_profiler.set(PF_CAMERA_DATA, 1);
-#endif
-
     size_t stride = ((cam_obj_t *)cam_obj)->dma_bytes_per_item;
 
     if ( getOVFFlagAndReset() )
     {
-#ifdef PROFILE_CAMERA_DATA    
-        s_profiler.toggle(PF_CAMERA_OVF);
-#endif
         s_quality_framesize_K3 = 0.05;
         cam_ovf_count++;
         s_stats.video_frames_expected++;
@@ -1834,10 +1628,6 @@ IRAM_ATTR size_t camera_data_available(void * cam_obj,const uint8_t* data, size_
                 s_video_frame_data_size += c;
                 s_video_full_frame_size += c;
 
-#ifdef PROFILE_CAMERA_DATA    
-                s_profiler.set(PF_CAMERA_DATA_SIZE, s_video_full_frame_size / 1024);
-#endif
-
 #ifdef BOARD_ESP32CAM
                 //ESP32 - sample offset: 2, stride: 4
                 size_t c8 = c >> 3;
@@ -1903,7 +1693,7 @@ IRAM_ATTR size_t camera_data_available(void * cam_obj,const uint8_t* data, size_
                     //Frame is lost anyway. 
                     //Let fec_encoder and wifi to send leftover and start with emtpy queues at the next camera frame.
                     if (!s_encoder_output_ovf_flag)
-                    { 
+                    {
                         send_air2ground_video_packet(false);
                     }
                     s_video_frame_data_size = 0;
@@ -1955,14 +1745,10 @@ IRAM_ATTR size_t camera_data_available(void * cam_obj,const uint8_t* data, size_
 
                     recalculateFrameSizeQualityK(s_video_full_frame_size);
                     applyAdaptiveQuality();
-#ifdef PROFILE_CAMERA_DATA    
-                    s_profiler.set(PF_CAMERA_FRAME_QUALITY, s_quality);
-#endif
+
                     s_stats.fec_spin_count += s_fec_spin_count;
                     s_fec_spin_count = 0;
-#ifdef PROFILE_CAMERA_DATA    
-                    s_profiler.set(PF_CAMERA_DATA_SIZE, 0);
-#endif
+
                     handle_ground2air_config_packetEx2(false);
 
                     if ( !g_osd.isLocked() && (g_osd.isChanged() || (s_osdUpdateCounter == 15)) )
@@ -1974,6 +1760,9 @@ IRAM_ATTR size_t camera_data_available(void * cam_obj,const uint8_t* data, size_
                     {
                         s_osdUpdateCounter++;
                     }
+
+                    // Call the new DHT11 logic here
+                    handle_dht11_read_and_send();
 
 #ifdef UART_MAVLINK
                     send_air2ground_data_packet();
@@ -2001,10 +1790,6 @@ IRAM_ATTR size_t camera_data_available(void * cam_obj,const uint8_t* data, size_
 
         s_fec_encoder.unlock();
     }
-
-#ifdef PROFILE_CAMERA_DATA    
-    s_profiler.set(PF_CAMERA_DATA, 0);
-#endif
 
     return count;
 }
@@ -2054,66 +1839,6 @@ static void init_camera()
         LOG("Camera init failed with error 0x%x", err);
         return;
     }
-}
-
-//#define SHOW_CPU_USAGE
-
-//=============================================================================================
-//=============================================================================================
-static void print_cpu_usage()
-{
-#ifdef SHOW_CPU_USAGE
-    TaskStatus_t* pxTaskStatusArray;
-    volatile UBaseType_t uxArraySize, x;
-    uint32_t ulTotalRunTime, ulStatsAsPercentage;
-
-    // Take a snapshot of the number of tasks in case it changes while this
-    // function is executing.
-    uxArraySize = uxTaskGetNumberOfTasks();
-    //LOG("%u tasks\n", uxArraySize);
-
-    // Allocate a TaskStatus_t structure for each task.  An array could be
-    // allocated statically at compile time.
-    pxTaskStatusArray = (TaskStatus_t*)heap_caps_malloc(uxArraySize * sizeof(TaskStatus_t), MALLOC_CAP_SPIRAM);
-
-    if (pxTaskStatusArray != NULL)
-    {
-        // Generate raw status information about each task.
-        uxArraySize = uxTaskGetSystemState(pxTaskStatusArray, uxArraySize, &ulTotalRunTime);
-        //LOG("%u total usage\n", ulTotalRunTime);
-
-        // For percentage calculations.
-        ulTotalRunTime /= 100UL;
-
-        // Avoid divide by zero errors.
-        if (ulTotalRunTime > 0)
-        {
-            // For each populated position in the pxTaskStatusArray array,
-            // format the raw data as human readable ASCII data
-            for (x = 0; x < uxArraySize; x++)
-            {
-                // What percentage of the total run time has the task used?
-                // This will always be rounded down to the nearest integer.
-                // ulTotalRunTimeDiv100 has already been divided by 100.
-                ulStatsAsPercentage = pxTaskStatusArray[x].ulRunTimeCounter / ulTotalRunTime;
-
-                if (ulStatsAsPercentage > 0UL)
-                {
-                    LOG("%s\t\t%u\t\t%u%%\r\n", pxTaskStatusArray[x].pcTaskName, pxTaskStatusArray[x].ulRunTimeCounter, ulStatsAsPercentage);
-                }
-                else
-                {
-                    // If the percentage is zero here then the task has
-                    // consumed less than 1% of the total run time.
-                    LOG("%s\t\t%u\t\t<1%%\r\n", pxTaskStatusArray[x].pcTaskName, pxTaskStatusArray[x].ulRunTimeCounter);
-                }
-            }
-        }
-
-        // The array is no longer needed, free the memory it consumes.
-        free(pxTaskStatusArray);
-    }
-#endif
 }
 
 //=============================================================================================
@@ -2252,15 +1977,8 @@ extern "C" void app_main()
     heap_caps_print_heap_info(MALLOC_CAP_8BIT);
     heap_caps_print_heap_info(MALLOC_CAP_EXEC);
 
-    // initialize_status_led();
-    // initialize_esp32cam_flash_led_pin(true);
-    // initialize_rec_button();
     initialize_gpio_control_pin();
     initialize_i2c_at_boot();
-
-#ifdef ENABLE_PROFILER
-    s_profiler.init();
-#endif
 
 #ifdef INIT_UART_0
     printf("Init UART0...\n");
@@ -2297,48 +2015,6 @@ extern "C" void app_main()
         init_camera();
     }
 
-#ifdef INIT_UART_1
-    printf("Init UART1...\n");
-
-    uart_config_t uart_config1 = 
-    {
-        .baud_rate = UART1_BAUDRATE,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        .rx_flow_ctrl_thresh = 122,
-        .source_clk = UART_SCLK_APB,
-        .flags = 0
-    };  
-
-    ESP_ERROR_CHECK(uart_param_config(UART_NUM_1, &uart_config1) );
-    ESP_ERROR_CHECK(uart_driver_install(UART_NUM_1, UART1_RX_BUFFER_SIZE, UART1_TX_BUFFER_SIZE, 0, NULL, 0));
-    ESP_ERROR_CHECK(uart_set_pin(UART_NUM_1, TXD1_PIN, RXD1_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
-
-#endif
-
-//initialize UART2 after SD
-#ifdef INIT_UART_2
-    printf("Init UART2...\n");
-
-    uart_config_t uart_config2 = 
-    {
-        .baud_rate = UART2_BAUDRATE,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        .rx_flow_ctrl_thresh = 122,
-        .source_clk = UART_SCLK_APB,
-        .flags = 0
-    };  
-
-    ESP_ERROR_CHECK(uart_param_config(UART_NUM_2, &uart_config2) );
-    ESP_ERROR_CHECK(uart_driver_install(UART_NUM_2, UART2_RX_BUFFER_SIZE, UART2_TX_BUFFER_SIZE, 0, NULL, 0));
-    ESP_ERROR_CHECK(uart_set_pin(UART_NUM_2, TXD2_PIN, RXD2_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
-#endif
-
     printf("MEMORY Before Loop: \n");
     heap_caps_print_heap_info(MALLOC_CAP_8BIT);
     heap_caps_print_heap_info(MALLOC_CAP_EXEC);
@@ -2352,17 +2028,9 @@ extern "C" void app_main()
 
     LOG("WIFI channel: %d\n", s_ground2air_config_packet.dataChannel.wifi_channel );
 
-    temperature_sensor_init();
+    // temperature_sensor_init();
 
     s_initialized = true;
-
-    // Create DHT11 task with lower priority to minimize interference
-    xTaskCreate(dht11_task, "dht11_task", 2048, NULL, 1, &s_dht11_task_handle);
-    if (s_dht11_task_handle == NULL) {
-        LOG("Failed to create DHT11 task\n");
-    } else {
-        LOG("DHT11 task created successfully\n");
-    }
 
     while (true)
     {
@@ -2379,18 +2047,17 @@ extern "C" void app_main()
             s_stats.wlan_error_count += s_fec_wlan_error_count;
             s_fec_wlan_error_count = 0;
 
-            if (s_uart_verbose > 0 )
-            {
-                // LOG("WLAN S: %d, R: %d, E: %d, F: %d, D: %d, %%: %d...%d || FPS: %d(%d), D: %d || SD D: %d, E: %d || TLM IN: %d OUT: %d\nSK1: %d SK2: %d, SK3: %d, Q: %d s: %d ovf:%d || sbg: %d || AIR: 0x%04x || GS: 0x%04x\n ",
-                //     s_stats.wlan_data_sent, s_stats.wlan_data_received, s_stats.wlan_error_count, s_stats.fec_spin_count,
-                //     s_stats.wlan_received_packets_dropped, s_min_wlan_outgoing_queue_usage_seen, s_max_wlan_outgoing_queue_usage, 
-                //     s_actual_capture_fps, s_actual_capture_fps_expected, s_stats.video_data, s_stats.sd_data, s_stats.sd_drops, 
-                //     s_stats.in_telemetry_data, s_stats.out_telemetry_data,
-                //     (int)(s_quality_framesize_K1*100),  (int)(s_quality_framesize_K2*100), (int)(s_quality_framesize_K3*100), 
-                //     s_quality, (s_stats.camera_frame_size_min + s_stats.camera_frame_size_max)/2, cam_ovf_count, s_dbg,
-                //     s_air_device_id, s_connected_gs_device_id);
-                print_cpu_usage();
-            }
+            // if (s_uart_verbose > 0 )
+            // {
+            //     LOG("WLAN S: %d, R: %d, E: %d, F: %d, D: %d, %%: %d...%d || FPS: %d(%d), D: %d || SD D: %d, E: %d || TLM IN: %d OUT: %d\nSK1: %d SK2: %d, SK3: %d, Q: %d s: %d ovf:%d || sbg: %d || AIR: 0x%04x || GS: 0x%04x\n ",
+            //         s_stats.wlan_data_sent, s_stats.wlan_data_received, s_stats.wlan_error_count, s_stats.fec_spin_count,
+            //         s_stats.wlan_received_packets_dropped, s_min_wlan_outgoing_queue_usage_seen, s_max_wlan_outgoing_queue_usage, 
+            //         s_actual_capture_fps, s_actual_capture_fps_expected, s_stats.video_data, s_stats.sd_data, s_stats.sd_drops, 
+            //         s_stats.in_telemetry_data, s_stats.out_telemetry_data,
+            //         (int)(s_quality_framesize_K1*100),  (int)(s_quality_framesize_K2*100), (int)(s_quality_framesize_K3*100), 
+            //         s_quality, (s_stats.camera_frame_size_min + s_stats.camera_frame_size_max)/2, cam_ovf_count, s_dbg,
+            //         s_air_device_id, s_connected_gs_device_id);
+            // }
 
             s_max_frame_size = 0;
             s_dbg = 0;
@@ -2403,7 +2070,7 @@ extern "C" void app_main()
             s_last_stats = s_stats;
             s_stats = Stats();
 
-            temperature_sensor_read(&s_camera_temperature);
+            // temperature_sensor_read(&s_camera_temperature);
 
             if ( s_camera_stopped_requested != s_camera_stopped )
             {
@@ -2444,19 +2111,6 @@ extern "C" void app_main()
             }
         }
 
-        // Send DHT11 report packet every 5 seconds
-        dt = millis() - s_last_report_packet_tp;
-        if (dt > 5000) 
-        {
-            // Only send report packet if camera is not actively capturing
-            if (!s_video_frame_started && s_initialized && s_connected_gs_device_id != 0) {
-                s_fec_encoder.lock();
-                send_air2ground_report_packet();
-                s_fec_encoder.unlock();
-                s_last_report_packet_tp = millis(); // Reset timer after sending
-            }
-        }
-
         if ( s_accept_connection_timeout_ms != 0 ) 
         {
             if ( s_accept_connection_timeout_ms < millis() )
@@ -2465,29 +2119,8 @@ extern "C" void app_main()
             }
         }
 
-        vTaskDelay(10 / portTICK_PERIOD_MS);
+        vTaskDelay(100 / portTICK_PERIOD_MS);
         //esp_task_wdt_reset();
-
-        checkButton();
-
-        // update_status_led();
-
-#ifdef ENABLE_PROFILER
-        if ( s_profiler.full() || s_profiler.timedOut() )
-        {
-            LOG("Profiler stopped!\n");
-            s_profiler.stop();
-            s_profiler.save();
-            s_profiler.clear();
-        } 
-#endif
-
-#ifdef UART_MSP_OSD
-        //the msp.loop() should be called every ~10ms
-        //115200 BAUD is 11520 bytes per second or 115 bytes per 10 ms
-        //with UART RX buffer of 512 we are save with periods 10...40ms
-        g_msp.loop();
-#endif
 
         if ((s_restart_time!=0) && ( esp_timer_get_time()>s_restart_time))
         {
@@ -2530,6 +2163,6 @@ Air send:
 
 3) wifi_tx_proc
  - reads s_wlan_outgoing_queue
- - calls esp_wifi_80211_tx() 
-
+ - calls esp_wifi_80211_tx()
+ 
 */

@@ -9,8 +9,6 @@
 #include "packets.h"
 #include "crc.h"
 
-#include "vcd_profiler.h"
-
 //todo: use fec codec property instead
 extern bool isHQDVRMode();
 

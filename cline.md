@@ -1085,3 +1085,21 @@ if (s_dht11_data_valid && (Clock::now() - s_last_dht11_data_tp < std::chrono::se
 3. **Periodic Updates**: Sensor data is sent every 5 seconds, providing regular updates without overwhelming the communication channel
 4. **Error Handling**: CRC verification ensures data integrity, and timeout handling prevents blocking of critical operations
 5. **Flexible Design**: The report packet structure can be extended to include additional sensor types in the future
+
+### DHT11 Logic (`handle_dht11_logic` function)
+
+The `handle_dht11_logic` function is responsible for managing the reading and sending of DHT11 sensor data from the air unit. It implements a two-pass mechanism to ensure that both the sensor reading (which involves I2C communication) and the packet transmission are handled efficiently without blocking critical video streaming operations.
+
+**Functionality:**
+- **Two-Pass Cycle:** The function operates in two distinct passes within a single 5-second interval:
+    1.  **Read Pass:** In the first pass, it attempts to read data from the DHT11 sensor via I2C. If successful, it updates the global `s_dht11_temperature`, `s_dht11_humidity`, and `s_dht11_data_valid` variables.
+    2.  **Send Pass:** In the second pass, it checks if the DHT11 data is valid and if the air unit is connected to a ground station. If both conditions are met, it calls `send_air2ground_report_packet()` to transmit the sensor data.
+- **Flexible Timing:** A `s_last_report_packet_tp` timer ensures that a full read-and-send cycle is attempted only after a minimum of 5 seconds has passed. However, the two-pass approach allows each step (read and send) to execute in separate, short bursts within the `camera_data_available` callback, ensuring that the overall process is not strictly tied to a single 5-second tick but can adapt to the availability of processing time.
+
+**Importance of Placement (`camera_data_available` callback):**
+It is crucial that `handle_dht11_logic` is called from within the `camera_data_available` callback, specifically after `s_video_frame_started` is set to `false` (at the end of a video frame). This placement is vital for the following reasons:
+
+1.  **Non-Blocking Operation:** The `camera_data_available` callback is a high-priority, IRAM-optimized function that runs frequently during active video streaming. By integrating the DHT11 logic here, the sensor reading and packet sending operations are executed in small, quick bursts, minimizing their impact on the real-time video processing and transmission.
+2.  **Reliable Execution during Streaming:** Unlike the `app_main` loop, which might miss brief windows of opportunity due to its `vTaskDelay`, the `camera_data_available` callback provides a consistent and frequent execution context. The end of a video frame (when `s_video_frame_started` is `false`) is a natural synchronization point where the system is momentarily less burdened by video data, making it an ideal time to perform other periodic tasks.
+3.  **Avoiding Interference:** Placing the I2C communication (reading DHT11) and Wi-Fi transmission (sending report packet) within this callback, and splitting them into two passes, helps prevent these operations from interfering with the continuous flow of video data. This ensures that the FPV system maintains low latency and high video quality while still providing essential telemetry.
+4.  **Adaptive Scheduling:** The 5-second timer acts as a minimum interval, but the actual execution of the read and send passes will occur at the next available opportunity within the `camera_data_available` callback after the timer expires. This makes the system more robust to temporary CPU load spikes, as it doesn't strictly demand execution at an exact 5-second mark but rather "at or after" 5 seconds when resources are available.
