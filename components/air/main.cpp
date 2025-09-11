@@ -111,15 +111,6 @@ static uint16_t s_connected_gs_device_id = 0;
 
 static int64_t s_accept_connection_timeout_ms = 0;
 
-#ifdef UART_MAVLINK
-
-//constexpr size_t MAX_TELEMETRY_PAYLOAD_SIZE = AIR2GROUND_MTU - sizeof(Air2Ground_Data_Packet);
-//constexpr size_t MAX_TELEMETRY_PAYLOAD_SIZE = 512;
-constexpr size_t MAX_TELEMETRY_PAYLOAD_SIZE = 128;
-
-static uint8_t s_mavlink_out_buffer[MAX_TELEMETRY_PAYLOAD_SIZE];
-static int s_mavlinkOutBufferCount = 0;
-#endif
 /////////////////////////////////////////////////////////////////////////
 
 static int s_uart_verbose = 1;
@@ -883,72 +874,10 @@ IRAM_ATTR static void handle_ground2air_control_packet(Ground2Air_Control_Packet
 
 //===========================================================================================
 //===========================================================================================
-__attribute__((optimize("Os")))
-IRAM_ATTR static void handle_ground2air_data_packet(Ground2Air_Data_Packet& src)
-{
-#ifdef UART_MAVLINK
-    if ( ( s_connected_gs_device_id == 0 ) || ( src.gsDeviceId != s_connected_gs_device_id ) ) return;
-
-    xSemaphoreTake(s_serial_mux, portMAX_DELAY);
-
-    int s = src.size - sizeof(Ground2Air_Header);
-    s_stats.in_telemetry_data += s;
-
-    uint8_t* dPtr = ((uint8_t*)&src) + sizeof(Ground2Air_Header);
-    for ( int i = 0; i < s; i++ )
-    {
-        mavlinkParserIn.processByte(*dPtr++);
-        if ( mavlinkParserIn.gotPacket())
-        {
-            if ( mavlinkParserIn.getMessageId() == HX_MAXLINK_RC_CHANNELS_OVERRIDE )
-            {
-                uint32_t t = (uint32_t)millis();
-                int d = t - s_last_rc_packet_tp;
-                s_last_rc_packet_tp = t;
-                if ( d > s_stats.RCPeriodMaxMS ) 
-                {
-                    s_stats.RCPeriodMaxMS = d;
-                }
-
-                if ( s_ground2air_config_packet2.dataChannel.mavlink2mspRC != 0 )
-                {
-                    const HXMAVLinkRCChannelsOverride* msg = mavlinkParserIn.getMsg<HXMAVLinkRCChannelsOverride>();
-                    //LOG("%d %d %d %d\n", msg->chan1_raw, msg->chan2_raw, msg->chan3_raw, msg->chan4_raw);
-                    uint16_t ch[MSP_RC_CHANNELS_COUNT];
-                    for ( int i = 0; i < MSP_RC_CHANNELS_COUNT; i++ )
-                    {
-                        ch[i] = msg->getChannelValue( i + 1 );
-                    }
-                    g_msp.setRCChannels(ch);
-                }
-
-                if ( s_ground2air_config_packet2.dataChannel.cameraStopChannel != 0 )
-                {
-                    const HXMAVLinkRCChannelsOverride* msg = mavlinkParserIn.getMsg<HXMAVLinkRCChannelsOverride>();
-                    s_camera_stopped_requested = msg->getChannelValue( s_ground2air_config_packet2.dataChannel.cameraStopChannel ) > 1700;
-
-                    //LOG("%d %d %d %d\n", msg->chan1_raw, msg->chan2_raw, msg->chan3_raw, msg->chan4_raw);
-                    //LOG("%d %d %d %d %d\n", msg->chan9_raw, msg->chan10_raw, msg->chan11_raw, msg->chan12_raw, mavlinkParserIn.getPacketLength());
-                }
-                else
-                {
-                    s_camera_stopped_requested = false;
-                }
-            }
-        }
-    }
-
-    size_t freeSize = 0;
-    ESP_ERROR_CHECK( uart_get_tx_buffer_free_size(UART_MAVLINK, &freeSize) );
-
-    if ( freeSize >= s )
-    {
-        uart_write_bytes(UART_MAVLINK, ((uint8_t*)&src) + sizeof(Ground2Air_Header), s);
-    }
-
-    xSemaphoreGive(s_serial_mux);
-#endif
-}
+// __attribute__((optimize("Os")))
+// IRAM_ATTR static void handle_ground2air_data_packet(Ground2Air_Data_Packet& src)
+// {
+// }
 
 //=============================================================================================
 //=============================================================================================
@@ -982,71 +911,6 @@ IRAM_ATTR void send_air2ground_video_packet(bool last)
         s_stats.wlan_error_count++;
     }
 }
-
-#ifdef UART_MAVLINK
-//=============================================================================================
-//=============================================================================================
-//this currently called every frame: 50...11 fps
-//30 fps: 30 * 128 = 3840 bytes/sec or 38400 baud
-//11 fps: 11 * 128 - 1408 = 14080 baud
-//todo: increase max mavlink payload size to 1K. Packets are 1.4K anyway. With 128 bytes we can not push 115200 mavlink stream currently.
-//also UART RX ring buffer of 512 can not handle 115200 at 11 fps
-IRAM_ATTR void send_air2ground_data_packet()
-{
-    int avail = MAX_TELEMETRY_PAYLOAD_SIZE - s_mavlinkOutBufferCount;
-    if ( avail > 0 )
-    {
-        size_t rs = 0;
-        ESP_ERROR_CHECK( uart_get_buffered_data_len(UART_MAVLINK, &rs) );
-        if ( rs > avail ) rs = avail;
-
-        if ( rs > 0 )
-        {
-            int len = uart_read_bytes(UART_MAVLINK, &(s_mavlink_out_buffer[s_mavlinkOutBufferCount]),rs, 0);
-            if ( len < 0 )
-            {
-                LOG("MAVLNK COM error\n");
-            }
-            else
-            {
-                s_mavlinkOutBufferCount += len;
-            }
-        }
-    }
-
-    if ( s_mavlinkOutBufferCount < MAX_TELEMETRY_PAYLOAD_SIZE ) return; //todo: or agregationtime
-
-    uint8_t* packet_data = s_fec_encoder.get_encode_packet_data(true);
-    if(!packet_data)
-    {
-        LOG("no data buf!\n");
-        return;
-    }
-
-    Air2Ground_Data_Packet& packet = *(Air2Ground_Data_Packet*)packet_data;
-    packet.type = Air2Ground_Header::Type::Telemetry;
-    packet.size = s_mavlinkOutBufferCount + sizeof(Air2Ground_Data_Packet);
-    packet.pong = s_ground2air_config_packet.ping;
-    packet.version = PACKET_VERSION;
-    packet.airDeviceId = s_air_device_id;
-    packet.gsDeviceId = s_connected_gs_device_id;
-    packet.crc = 0;
-    packet.crc = crc8(0, &packet, sizeof(Air2Ground_Data_Packet));
-
-    memcpy( packet_data + sizeof(Air2Ground_Data_Packet), s_mavlink_out_buffer, s_mavlinkOutBufferCount );
-
-    if (!s_fec_encoder.flush_encode_packet(true))
-    {
-        LOG("Fec codec busy\n");
-        s_stats.wlan_error_count++;
-    }
-    else
-    {
-        s_stats.out_telemetry_data += s_mavlinkOutBufferCount;
-        s_mavlinkOutBufferCount = 0;
-    }
-}
-#endif
 
 //=============================================================================================
 //=============================================================================================
@@ -1764,10 +1628,6 @@ IRAM_ATTR size_t camera_data_available(void * cam_obj,const uint8_t* data, size_
                     // Call the new DHT11 logic here
                     handle_dht11_read_and_send();
 
-#ifdef UART_MAVLINK
-                    send_air2ground_data_packet();
-#endif
-
                     int64_t dt = millis() - s_last_config_packet_tp;
                     if ( dt > 500 ) 
                     {
@@ -2023,7 +1883,7 @@ extern "C" void app_main()
     handle_ground2air_config_packetEx2( true);
     set_ground2air_config_packet_handler(handle_ground2air_config_packet);
     set_ground2air_connect_packet_handler(handle_ground2air_connect_packet);
-    set_ground2air_data_packet_handler(handle_ground2air_data_packet);
+    // set_ground2air_data_packet_handler(handle_ground2air_data_packet);
     set_ground2air_control_packet_handler(handle_ground2air_control_packet);
 
     LOG("WIFI channel: %d\n", s_ground2air_config_packet.dataChannel.wifi_channel );
