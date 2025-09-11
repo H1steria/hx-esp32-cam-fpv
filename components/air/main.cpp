@@ -27,7 +27,6 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "driver/uart.h"
-#include "driver/i2c.h"
 #include <unistd.h>
 #include <fcntl.h>
 #include "esp_random.h"
@@ -56,10 +55,13 @@
 
 #include "hx_mavlink_parser.h"
 
+#include "i2c.h"
+#include "report.h"
+
 static int s_stats_last_tp = -10000;
 static int s_last_osd_packet_tp = -10000;
 static int s_last_config_packet_tp = -10000;
-static int64_t s_last_report_packet_tp = -5000;
+// static int64_t s_last_report_packet_tp = -5000;
 
 #define MJPEG_PATTERN_SIZE 512 
 
@@ -106,14 +108,14 @@ uint16_t s_framesCounter = 0;
 
 static bool s_initialized = false;
 
-static uint16_t s_air_device_id;
-static uint16_t s_connected_gs_device_id = 0;
+uint16_t s_air_device_id;
+uint16_t s_connected_gs_device_id = 0;
 
 static int64_t s_accept_connection_timeout_ms = 0;
 
 /////////////////////////////////////////////////////////////////////////
 
-static int s_uart_verbose = 1;
+int s_uart_verbose = 1;
 
 #define LOG(...) do { if (s_uart_verbose > 0) SAFE_PRINTF(__VA_ARGS__); } while (false) 
 
@@ -130,158 +132,11 @@ static uint64_t s_shouldRestartRecording;
 
 HXMavlinkParser mavlinkParserIn(true);
 
-// DHT11 data
-static float s_dht11_humidity = 0.0;
-static float s_dht11_temperature = 0.0;
-static bool s_dht11_data_valid = false;
-
 //=============================================================================================
 //=============================================================================================
 #ifdef GPIO_CONTROL_PIN
 static bool s_gpio_control_state = false;
 #endif
-
-static bool s_i2c_initialized = false;
-
-//=============================================================================================
-//=============================================================================================
-esp_err_t i2c_master_init()
-{
-    if (s_i2c_initialized) return ESP_OK;
-
-    i2c_config_t conf = {
-        .mode = I2C_MODE_MASTER,
-        .sda_io_num = I2C_SDA_PIN,
-        .scl_io_num = I2C_SCL_PIN,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master = {
-            .clk_speed = I2C_MASTER_FREQ_HZ
-        },
-        .clk_flags = 0
-    };
-    
-    // Uninstall driver first if it was previously installed
-    i2c_driver_delete(I2C_MASTER_NUM);
-    
-    esp_err_t err = i2c_param_config(I2C_MASTER_NUM, &conf);
-    if (err != ESP_OK) {
-        LOG("Failed to configure I2C parameters: %s\n", esp_err_to_name(err));
-        return err;
-    }
-    
-    // Install driver with 0 buffer sizes for master mode
-    err = i2c_driver_install(I2C_MASTER_NUM, conf.mode, 0, 0, 0);
-    if (err != ESP_OK) {
-        LOG("Failed to install I2C driver: %s\n", esp_err_to_name(err));
-        return err;
-    }
-
-    s_i2c_initialized = true;
-    LOG("I2C Master initialized - SDA:%d SCL:%d Freq:%dHz\n", I2C_SDA_PIN, I2C_SCL_PIN, I2C_MASTER_FREQ_HZ);
-    return ESP_OK;
-}
-
-void initialize_i2c()
-{
-    esp_err_t ret = i2c_master_init();
-    if (ret != ESP_OK) {
-        LOG("Failed to initialize I2C master: %s\n", esp_err_to_name(ret));
-    }
-}
-
-void send_i2c_command(uint8_t command)
-{
-    if (!s_i2c_initialized) {
-        initialize_i2c();
-        if (!s_i2c_initialized) {
-            LOG("Failed to initialize I2C\n");
-            return;
-        }
-    }
-
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (I2C_SLAVE_ADDR << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, command, true);
-    i2c_master_stop(cmd);
-    
-    // Use a longer timeout to ensure reliable communication
-    esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(100));
-    i2c_cmd_link_delete(cmd);
-    
-    if (ret == ESP_OK) {
-        LOG("I2C command %d sent successfully\n", command);
-    } else {
-        LOG("Failed to send I2C command %d, error: %s\n", command, esp_err_to_name(ret));
-        // Try to reinitialize I2C on failure
-        s_i2c_initialized = false;
-        initialize_i2c();
-    }
-    
-    // Add a small delay after I2C communication to reduce interference
-    // Only delay if camera is not actively capturing
-    if (!s_video_frame_started) {
-        vTaskDelay(5 / portTICK_PERIOD_MS);
-    }
-}
-
-// Function to read DHT11 data from I2C slave
-esp_err_t read_dht11_data(float* humidity, float* temperature) {
-    TickType_t start_time = xTaskGetTickCount();
-    
-    if (!s_i2c_initialized) {
-        LOG("DHT11 Read - I2C not initialized, initializing\n");
-        initialize_i2c();
-        if (!s_i2c_initialized) {
-            LOG("DHT11 Read - Failed to initialize I2C\n");
-            return ESP_FAIL;
-        }
-    }
-
-    uint8_t data_buffer[9]; // 4 bytes for humidity + 4 bytes for temperature + 1 byte for valid flag
-
-    // Read data from slave
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (I2C_SLAVE_ADDR << 1) | I2C_MASTER_READ, true);
-    i2c_master_read(cmd, data_buffer, sizeof(data_buffer), I2C_MASTER_LAST_NACK);
-    i2c_master_stop(cmd);
-    
-    esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(100));
-    i2c_cmd_link_delete(cmd);
-    
-    if (ret == ESP_OK) {
-        // Log raw data for debugging
-        LOG("DHT11 Read - Raw data received: ");
-        for (int j = 0; j < sizeof(data_buffer); j++) {
-            LOG("%02X ", data_buffer[j]);
-        }
-        LOG("\n");
-
-        // Check data validity flag (last byte)
-        if (data_buffer[8] == 0) {
-            LOG("DHT11 Read - Data not valid from auxiliary unit\n");
-            LOG("%d-%d\n",data_buffer[7], data_buffer[8]);
-            return ESP_ERR_INVALID_STATE;
-        }
-
-        // Convert bytes to float values
-        memcpy(humidity, &data_buffer[0], sizeof(float));
-        memcpy(temperature, &data_buffer[4], sizeof(float));
-        
-        TickType_t end_time = xTaskGetTickCount();
-        LOG("DHT11 Read - Success: H=%d%%, T=%d°C (took %d ms)\n", 
-            (int)(*humidity), (int)(*temperature), (int)((end_time - start_time) * portTICK_PERIOD_MS));
-
-        return ESP_OK;
-    }
-    
-    LOG("DHT11 Read - Failed to read data, error: %s\n", esp_err_to_name(ret));
-    s_i2c_initialized = false;
-    return ret;
-}
-
 
 //=============================================================================================
 //=============================================================================================
@@ -300,20 +155,6 @@ void initialize_gpio_control_pin()
     s_gpio_control_state = false;
     LOG("GPIO control initialized on pin %d, state: OFF\n", GPIO_CONTROL_PIN);
 #endif
-}
-
-//=============================================================================================
-//=============================================================================================
-void initialize_i2c_at_boot()
-{
-    // Initialize I2C early in the boot process
-    LOG("Initializing I2C at boot...\n");
-    esp_err_t ret = i2c_master_init();
-    if (ret == ESP_OK && s_i2c_initialized) {
-        LOG("I2C successfully initialized at boot\n");
-    } else {
-        LOG("Failed to initialize I2C at boot: %s\n", esp_err_to_name(ret));
-    }
 }
 
 //=============================================================================================
@@ -339,36 +180,10 @@ IRAM_ATTR uint64_t millis()
 {
     return esp_timer_get_time() / 1000ULL;
 }
-//=============================================================================================
-//=============================================================================================
-void set_status_led(bool enabled)
-{
-#ifdef STATUS_LED_PIN
-    gpio_set_level(STATUS_LED_PIN, enabled ? STATUS_LED_ON : STATUS_LED_OFF);
-#endif    
-
-#ifdef ESP32CAM_FLASH_LED_PIN
-    enable_esp32cam_flash_led_pin(enabled);
-#endif    
-}
 
 //=============================================================================================
 //=============================================================================================
-bool getButtonState()
-{
-#ifdef REC_BUTTON_PIN
-    return gpio_get_level((gpio_num_t)REC_BUTTON_PIN) == 0;
-#endif
 
-
-#ifdef ESP32CAM_FLASH_LED_PIN
-    return read_esp32cam_flash_led_pin();
-#endif
-
-    return false;
-}
-
-//////////////////////////////////////////////////////////////////////////////
 static bool s_recv_ground2air_packet = false;
 
 SemaphoreHandle_t s_serial_mux = xSemaphoreCreateBinary();
@@ -1043,64 +858,64 @@ IRAM_ATTR void send_air2ground_config_packet()
 }
 //=============================================================================================
 //=============================================================================================
-IRAM_ATTR void send_air2ground_report_packet()
-{
-    uint8_t* packet_data = s_fec_encoder.get_encode_packet_data(true);
-    if( !packet_data )
-    {
-        LOG("no data buf!\n");
-        return;
-    }
+// IRAM_ATTR void send_air2ground_report_packet()
+// {
+//     uint8_t* packet_data = s_fec_encoder.get_encode_packet_data(true);
+//     if( !packet_data )
+//     {
+//         LOG("no data buf!\n");
+//         return;
+//     }
 
-    Air2Ground_Report_Packet& packet = *(Air2Ground_Report_Packet*)packet_data;
-    packet.type = Air2Ground_Header::Type::Report; // Using Report type for report packets
-    packet.size = sizeof(Air2Ground_Report_Packet);
-    packet.pong = s_ground2air_config_packet.ping;
-    packet.version = PACKET_VERSION;
-    packet.airDeviceId = s_air_device_id;
-    packet.gsDeviceId = s_connected_gs_device_id;
-    packet.crc = 0;
+//     Air2Ground_Report_Packet& packet = *(Air2Ground_Report_Packet*)packet_data;
+//     packet.type = Air2Ground_Header::Type::Report; // Using Report type for report packets
+//     packet.size = sizeof(Air2Ground_Report_Packet);
+//     packet.pong = s_ground2air_config_packet.ping;
+//     packet.version = PACKET_VERSION;
+//     packet.airDeviceId = s_air_device_id;
+//     packet.gsDeviceId = s_connected_gs_device_id;
+//     packet.crc = 0;
 
-    // Fill in DHT11 data
-    packet.temperature = s_dht11_temperature;
-    packet.humidity = s_dht11_humidity;
-    packet.data_valid = s_dht11_data_valid ? 1 : 0;
+//     // Fill in DHT11 data
+//     packet.temperature = s_dht11_temperature;
+//     packet.humidity = s_dht11_humidity;
+//     packet.data_valid = s_dht11_data_valid ? 1 : 0;
 
-    packet.crc = crc8(0, &packet, sizeof(Air2Ground_Report_Packet));
+//     packet.crc = crc8(0, &packet, sizeof(Air2Ground_Report_Packet));
 
-    if (!s_fec_encoder.flush_encode_packet(true))
-    {
-        LOG("Fec codec busy\n");
-        s_stats.wlan_error_count++;
-    }
-}
+//     if (!s_fec_encoder.flush_encode_packet(true))
+//     {
+//         LOG("Fec codec busy\n");
+//         s_stats.wlan_error_count++;
+//     }
+// }
 
-IRAM_ATTR void handle_dht11_read_and_send()
-{
-    // Only proceed if 5 seconds have passed since the last report packet was sent
-    if (millis() - s_last_report_packet_tp > 5000) {
-        float dht11_humidity_local = 0.0;
-        float dht11_temperature_local = 0.0;
+// IRAM_ATTR void handle_dht11_read_and_send()
+// {
+//     // Only proceed if 5 seconds have passed since the last report packet was sent
+//     if (millis() - s_last_report_packet_tp > 5000) {
+//         float dht11_humidity_local = 0.0;
+//         float dht11_temperature_local = 0.0;
         
-        esp_err_t result = read_dht11_data(&dht11_humidity_local, &dht11_temperature_local);
-        if (result == ESP_OK) {
-            s_dht11_humidity = dht11_humidity_local;
-            s_dht11_temperature = dht11_temperature_local;
-            s_dht11_data_valid = true;
-            LOG("DHT11 data - Humidity: %d%%, Temperature: %d°C\n", (int)dht11_humidity_local, (int)dht11_temperature_local);
-        } else {
-            s_dht11_data_valid = false;
-            LOG("Failed to read DHT11 data: %s\n", esp_err_to_name(result));
-        }
+//         esp_err_t result = read_dht11_data(&dht11_humidity_local, &dht11_temperature_local);
+//         if (result == ESP_OK) {
+//             s_dht11_humidity = dht11_humidity_local;
+//             s_dht11_temperature = dht11_temperature_local;
+//             s_dht11_data_valid = true;
+//             LOG("DHT11 data - Humidity: %d%%, Temperature: %d°C\n", (int)dht11_humidity_local, (int)dht11_temperature_local);
+//         } else {
+//             s_dht11_data_valid = false;
+//             LOG("Failed to read DHT11 data: %s\n", esp_err_to_name(result));
+//         }
 
-        // Always attempt to send the report packet if connected, regardless of read success
-        // The data_valid flag in the packet will indicate if the data is fresh/valid
-        if (s_connected_gs_device_id != 0) {
-            send_air2ground_report_packet();
-        }
-        s_last_report_packet_tp = millis(); // Reset timer after a full cycle (read attempt + send attempt)
-    }
-}
+//         // Always attempt to send the report packet if connected, regardless of read success
+//         // The data_valid flag in the packet will indicate if the data is fresh/valid
+//         if (s_connected_gs_device_id != 0) {
+//             send_air2ground_report_packet();
+//         }
+//         s_last_report_packet_tp = millis(); // Reset timer after a full cycle (read attempt + send attempt)
+//     }
+// }
 //=============================================================================================
 //=============================================================================================
 constexpr size_t MAX_VIDEO_DATA_PAYLOAD_SIZE = AIR2GROUND_MTU - sizeof(Air2Ground_Video_Packet);
@@ -1838,7 +1653,7 @@ extern "C" void app_main()
     heap_caps_print_heap_info(MALLOC_CAP_EXEC);
 
     initialize_gpio_control_pin();
-    initialize_i2c_at_boot();
+    initialize_i2c();
 
 #ifdef INIT_UART_0
     printf("Init UART0...\n");
@@ -1869,11 +1684,11 @@ extern "C" void app_main()
     setup_wifi(s_ground2air_config_packet.dataChannel.wifi_rate, s_ground2air_config_packet.dataChannel.wifi_channel, s_ground2air_config_packet.dataChannel.wifi_power, packet_received_cb);
     s_fec_encoder.packetFilter.set_packet_header_data( s_air_device_id, 0 );
 
-    if ( !getButtonState() )
-    {
-        //allocates 16kb dma buffer. Allocate ASAP before memory is fragmented.
-        init_camera();
-    }
+    // if ( !getButtonState() )
+    // {
+    //allocates 16kb dma buffer. Allocate ASAP before memory is fragmented.
+    init_camera();
+    // }
 
     printf("MEMORY Before Loop: \n");
     heap_caps_print_heap_info(MALLOC_CAP_8BIT);

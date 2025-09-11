@@ -6,6 +6,8 @@ set(srcs dummy.cpp
   ../../components/air/wifi.cpp 
   ../../components/air/osd.cpp 
   ../../components/air/msp.cpp
+  ../../components/air/i2c.cpp
+  ../../components/air/report.cpp
 )
 
 idf_component_register(SRCS "${srcs}"
