@@ -197,7 +197,9 @@ static_assert(sizeof(Ground2Air_Config_Packet) <= GROUND2AIR_DATA_MAX_SIZE, "");
 //======================================================
 struct Ground2Air_Control_Packet : Ground2Air_Header
 {
-    uint8_t command; // 0=none, 1=forward, 2=backward, 3=right, 4=left, 5=flash
+    uint8_t command; // 0=none, 1=forward, 2=backward, 3=right, 4=left, 5=flash, 6=joystick_move
+    int8_t joystick_x; // -100 to 100
+    int8_t joystick_y; // -100 to 100
 };
 static_assert(sizeof(Ground2Air_Control_Packet) <= GROUND2AIR_DATA_MAX_SIZE, "");
 

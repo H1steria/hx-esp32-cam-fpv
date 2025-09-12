@@ -33,6 +33,8 @@
 #include "hx_mavlink_parser.h"
 
 #include "utils.h"
+#include "Dualshock3.h"
+#include <cmath>
 
 /*
 
@@ -319,6 +321,8 @@ bool s_got_config_packet = false;
 bool s_accept_config_packet = false;
 
 static HXMavlinkParser mavlinkParserIn(true);
+
+Dualshock3 s_dualshock3;
 
 //===================================================================================
 //===================================================================================
@@ -1348,76 +1352,53 @@ void handleKeyboardInput(Ground2Air_Config_Packet& config, bool ignoreKeys, bool
         s_groundstation_config.stats = !s_groundstation_config.stats;
     }
 
-    // Handle movement keys (W, A, S, D)
-    if (ImGui::IsKeyPressed(ImGuiKey_W) && s_connected_air_device_id != 0)
+    // Only process keyboard movement/flash if Dualshock3 is not connected
+    if (!s_dualshock3.isConnected() && s_connected_air_device_id != 0)
     {
-        // Send forward command
-        Ground2Air_Control_Packet packet_to_send;
-        packet_to_send.command = CMD_FORWARD;
-        packet_to_send.type = Ground2Air_Header::Type::Control;
-        packet_to_send.size = sizeof(packet_to_send);
-        packet_to_send.airDeviceId = s_connected_air_device_id;
-        packet_to_send.gsDeviceId = s_groundstation_config.deviceId;
-        packet_to_send.crc = 0;
-        packet_to_send.crc = crc8(0, &packet_to_send, sizeof(packet_to_send));
-        LOGI("Sending CMD_FORWARD command to air device 0x{:04X}", s_connected_air_device_id);
-        s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
-    }
-    else if (ImGui::IsKeyPressed(ImGuiKey_S) && s_connected_air_device_id != 0)
-    {
-        // Send backward command
-        Ground2Air_Control_Packet packet_to_send;
-        packet_to_send.command = CMD_BACKWARD;
-        packet_to_send.type = Ground2Air_Header::Type::Control;
-        packet_to_send.size = sizeof(packet_to_send);
-        packet_to_send.airDeviceId = s_connected_air_device_id;
-        packet_to_send.gsDeviceId = s_groundstation_config.deviceId;
-        packet_to_send.crc = 0;
-        packet_to_send.crc = crc8(0, &packet_to_send, sizeof(packet_to_send));
-        LOGI("Sending CMD_BACKWARD command to air device 0x{:04X}", s_connected_air_device_id);
-        s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
-    }
-    else if (ImGui::IsKeyPressed(ImGuiKey_A) && s_connected_air_device_id != 0)
-    {
-        // Send left command
-        Ground2Air_Control_Packet packet_to_send;
-        packet_to_send.command = CMD_LEFT;
-        packet_to_send.type = Ground2Air_Header::Type::Control;
-        packet_to_send.size = sizeof(packet_to_send);
-        packet_to_send.airDeviceId = s_connected_air_device_id;
-        packet_to_send.gsDeviceId = s_groundstation_config.deviceId;
-        packet_to_send.crc = 0;
-        packet_to_send.crc = crc8(0, &packet_to_send, sizeof(packet_to_send));
-        LOGI("Sending CMD_LEFT command to air device 0x{:04X}", s_connected_air_device_id);
-        s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
-    }
-    else if (ImGui::IsKeyPressed(ImGuiKey_D) && s_connected_air_device_id != 0)
-    {
-        // Send right command
-        Ground2Air_Control_Packet packet_to_send;
-        packet_to_send.command = CMD_RIGHT;
-        packet_to_send.type = Ground2Air_Header::Type::Control;
-        packet_to_send.size = sizeof(packet_to_send);
-        packet_to_send.airDeviceId = s_connected_air_device_id;
-        packet_to_send.gsDeviceId = s_groundstation_config.deviceId;
-        packet_to_send.crc = 0;
-        packet_to_send.crc = crc8(0, &packet_to_send, sizeof(packet_to_send));
-        LOGI("Sending CMD_RIGHT command to air device 0x{:04X}", s_connected_air_device_id);
-        s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
-    }
-    else if (ImGui::IsKeyPressed(ImGuiKey_F) && s_connected_air_device_id != 0)
-    {
-        // Send flash command
-        Ground2Air_Control_Packet packet_to_send;
-        packet_to_send.command = CMD_FLASH; // Always send CMD_FLASH, Air Unit will toggle
-        packet_to_send.type = Ground2Air_Header::Type::Control;
-        packet_to_send.size = sizeof(packet_to_send);
-        packet_to_send.airDeviceId = s_connected_air_device_id;
-        packet_to_send.gsDeviceId = s_groundstation_config.deviceId;
-        packet_to_send.crc = 0;
-        packet_to_send.crc = crc8(0, &packet_to_send, sizeof(packet_to_send));
-        LOGI("Sending CMD_FLASH command to air device 0x{:04X}", s_connected_air_device_id);
-        s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
+        int8_t joystick_x = 0;
+        int8_t joystick_y = 0;
+        uint8_t command = CMD_NONE;
+
+        if (ImGui::IsKeyPressed(ImGuiKey_W))
+        {
+            joystick_y = 50; // Forward
+            command = CMD_JOYSTICK_MOVE;
+        }
+        else if (ImGui::IsKeyPressed(ImGuiKey_S))
+        {
+            joystick_y = -50; // Backward
+            command = CMD_JOYSTICK_MOVE;
+        }
+        else if (ImGui::IsKeyPressed(ImGuiKey_A))
+        {
+            joystick_x = -50; // Left
+            command = CMD_JOYSTICK_MOVE;
+        }
+        else if (ImGui::IsKeyPressed(ImGuiKey_D))
+        {
+            joystick_x = 50; // Right
+            command = CMD_JOYSTICK_MOVE;
+        }
+        else if (ImGui::IsKeyPressed(ImGuiKey_F))
+        {
+            command = CMD_FLASH; // Toggle flash
+        }
+
+        if (command != CMD_NONE)
+        {
+            Ground2Air_Control_Packet packet_to_send;
+            packet_to_send.command = command;
+            packet_to_send.joystick_x = joystick_x;
+            packet_to_send.joystick_y = joystick_y;
+            packet_to_send.type = Ground2Air_Header::Type::Control;
+            packet_to_send.size = sizeof(packet_to_send);
+            packet_to_send.airDeviceId = s_connected_air_device_id;
+            packet_to_send.gsDeviceId = s_groundstation_config.deviceId;
+            packet_to_send.crc = 0;
+            packet_to_send.crc = crc8(0, &packet_to_send, sizeof(packet_to_send));
+            LOGI("Sending keyboard command {} (x:{}, y:{}) to air device 0x{:04X}", (int)command, (int)joystick_x, (int)joystick_y, s_connected_air_device_id);
+            s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
+        }
     }
 
     if (!ignoreKeys && ImGui::IsKeyPressed(ImGuiKey_LeftArrow))
@@ -2809,11 +2790,31 @@ int main(int argc, const char* argv[])
     s_comms.setChannel( s_groundstation_config.wifi_channel );
     s_comms.setTxPower( s_groundstation_config.txPower );
 
+    s_dualshock3.start(); // Start Dualshock3 input thread
+
+    s_dualshock3.setControlCallback(
+        [&](uint8_t command, int8_t joystick_x, int8_t joystick_y) {
+            if (s_connected_air_device_id != 0) {
+                Ground2Air_Control_Packet packet_to_send;
+                packet_to_send.command = command;
+                packet_to_send.joystick_x = joystick_x;
+                packet_to_send.joystick_y = joystick_y;
+                packet_to_send.type = Ground2Air_Header::Type::Control;
+                packet_to_send.size = sizeof(packet_to_send);
+                packet_to_send.airDeviceId = s_connected_air_device_id;
+                packet_to_send.gsDeviceId = s_groundstation_config.deviceId;
+                packet_to_send.crc = 0;
+                packet_to_send.crc = crc8(0, &packet_to_send, sizeof(packet_to_send));
+                s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
+            }
+        });
+
     //gpio_buttons_start();
 
     int result = run((char **)argv);
 
-    gpio_buttons_stop();
+    //gpio_buttons_stop();
+    s_dualshock3.stop(); // Stop Dualshock3 input thread
 
     s_hal->shutdown();
 

@@ -27,11 +27,13 @@
 #define I2C_SLAVE_ADDR 0x08        // I2C slave device address
 
 // I2C Command Definitions
+#define I2C_CMD_NONE 0
 #define I2C_CMD_FORWARD 1
 #define I2C_CMD_BACKWARD 2
 #define I2C_CMD_RIGHT 3
 #define I2C_CMD_LEFT 4
 #define I2C_CMD_FLASH 5
+#define I2C_CMD_JOYSTICK_MOVE 6
 
 #define UART0_BAUDRATE 115200
 

@@ -647,25 +647,17 @@ IRAM_ATTR static void handle_ground2air_control_packet(Ground2Air_Control_Packet
     {
         switch (src.command)
         {
-            case I2C_CMD_FORWARD: // Forward
-                send_i2c_command(I2C_CMD_FORWARD);
-                LOG("Forward command sent via I2C\n");
-                break;
-            case I2C_CMD_BACKWARD: // Backward
-                send_i2c_command(I2C_CMD_BACKWARD);
-                LOG("Backward command sent via I2C\n");
-                break;
-            case I2C_CMD_RIGHT: // Right
-                send_i2c_command(I2C_CMD_RIGHT);
-                LOG("Right command sent via I2C\n");
-                break;
-            case I2C_CMD_LEFT: // Left
-                send_i2c_command(I2C_CMD_LEFT);
-                LOG("Left command sent via I2C\n");
-                break;
             case I2C_CMD_FLASH: // Flash
                 set_gpio_control_pin(!s_gpio_control_state);
                 LOG("Flash toggled to %s\n", s_gpio_control_state ? "ON" : "OFF");
+                break;
+            case I2C_CMD_JOYSTICK_MOVE: // Joystick movement
+                send_i2c_command(I2C_CMD_JOYSTICK_MOVE, src.joystick_x, src.joystick_y);
+                LOG("Joystick move command sent via I2C: x=%d, y=%d\n", src.joystick_x, src.joystick_y);
+                break;
+            case I2C_CMD_NONE: // Stop all movement
+                send_i2c_command(I2C_CMD_NONE, 0, 0);
+                LOG("Stop command sent via I2C\n");
                 break;
             default:
                 LOG("Unknown command received: %d\n", src.command);

@@ -22,6 +22,7 @@ public:
     void right();
     void left();
     void stop();
+    void set_movement(int8_t joystick_x, int8_t joystick_y);
 };
 
 #endif // MOTOR_H

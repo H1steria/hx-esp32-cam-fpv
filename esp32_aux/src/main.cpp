@@ -8,11 +8,13 @@
 #include "dht11.h"
 
 // I2C Command Definitions from components/air/main.h
+#define I2C_CMD_NONE 0
 #define I2C_CMD_FORWARD 1
 #define I2C_CMD_BACKWARD 2
 #define I2C_CMD_RIGHT 3
 #define I2C_CMD_LEFT 4
 #define I2C_CMD_FLASH 5
+#define I2C_CMD_JOYSTICK_MOVE 6
 static const char *TAG = "MAIN";
 
 // Motor pins configuration
@@ -97,31 +99,31 @@ extern "C" void app_main() {
         if (size > 0) {
             ESP_LOGI(TAG, "Received data (%d bytes): ", size);
             
-            // Process each received byte as a command
-            for (int i = 0; i < size; i++) {
-                ESP_LOGI(TAG, "Received command: 0x%02X", receivedData[i]);
-                
-                switch (receivedData[i]) {
-                    case I2C_CMD_FORWARD:
-                        motor.forward();
-                        break;
-                    case I2C_CMD_BACKWARD:
-                        motor.backward();
-                        break;
-                    case I2C_CMD_RIGHT:
-                        motor.right();
-                        break;
-                    case I2C_CMD_LEFT:
-                        motor.left();
-                        break;
+            uint8_t command = receivedData[0];
+            int8_t joystick_x = 0;
+            int8_t joystick_y = 0;
+
+            ESP_LOGI(TAG, "Received command: 0x%02X", command);
+
+            if (command == I2C_CMD_JOYSTICK_MOVE && size >= 3) {
+                joystick_x = receivedData[1];
+                joystick_y = receivedData[2];
+                ESP_LOGI(TAG, "Joystick move command: x=%d, y=%d", joystick_x, joystick_y);
+                motor.set_movement(joystick_x, joystick_y);
+            } else {
+                switch (command) {
                     case I2C_CMD_FLASH:
                         // Flash command - not implemented for motor control
                         ESP_LOGI(TAG, "FLASH command received - no action on motors");
                         break;
+                    case I2C_CMD_NONE:
+                        motor.stop();
+                        ESP_LOGI(TAG, "Stop command received - stopping motors");
+                        break;
                     default:
                         // Unknown command - stop motors
                         motor.stop();
-                        ESP_LOGW(TAG, "Unknown command: 0x%02X - stopping motors", receivedData[i]);
+                        ESP_LOGW(TAG, "Unknown command: 0x%02X - stopping motors", command);
                         break;
                 }
             }

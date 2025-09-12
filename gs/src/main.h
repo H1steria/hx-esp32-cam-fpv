@@ -181,3 +181,4 @@ extern bool s_dht11_data_valid;
 #define CMD_RIGHT    3
 #define CMD_LEFT     4
 #define CMD_FLASH    5
+#define CMD_JOYSTICK_MOVE 6

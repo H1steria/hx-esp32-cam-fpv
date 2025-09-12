@@ -5,6 +5,7 @@
 #include <cstring>
 #include <csignal>
 #include <iomanip>
+#include <cerrno> // Necesario para 'errno'
 
 bool running = true;
 int joystick_fd = -1;
@@ -20,7 +21,6 @@ void signalHandler(int signal) {
 bool openJoystick() {
     if (joystick_fd >= 0) {
         close(joystick_fd);
-        joystick_fd = -1;
     }
     
     joystick_fd = open(device, O_RDONLY | O_NONBLOCK);
@@ -81,21 +81,30 @@ int main() {
             
             if (bytes == sizeof(event)) {
                 // Procesar el evento según su tipo
-                switch (event.type & ~JS_EVENT_INIT) {
+                // **CORRECCIÓN:** No ignorar JS_EVENT_INIT para procesar el estado inicial
+                switch (event.type) {
                     case JS_EVENT_BUTTON:
-                        if (event.value == 1) {
-                            std::cout << "Botón " << (int)event.number << " presionado" << std::endl;
-                        } else {
-                            std::cout << "Botón " << (int)event.number << " liberado" << std::endl;
-                        }
+                        std::cout << "Botón " << (int)event.number 
+                                  << (event.value ? " presionado" : " liberado") 
+                                  << " (valor: " << event.value << ")" << std::endl;
                         break;
                         
                     case JS_EVENT_AXIS:
-                        // Los valores van de -32767 a 32767, convertir a -1.0 a 1.0
-                        float axis_value = event.value / 32767.0f;
+                        // **CORRECCIÓN:** Imprimir el valor sin procesar del eje
                         std::cout << "Eje " << (int)event.number 
-                                  << " movido a " << std::fixed << std::setprecision(2) 
-                                  << axis_value << std::endl;
+                                  << " movido a " << event.value << std::endl;
+                        break;
+
+                    // Manejar explícitamente los eventos de inicialización si se desea
+                    case JS_EVENT_INIT | JS_EVENT_BUTTON:
+                        std::cout << "Botón " << (int)event.number 
+                                  << " estado inicial: " << (event.value ? "presionado" : "liberado")
+                                  << " (valor: " << event.value << ")" << std::endl;
+                        break;
+
+                    case JS_EVENT_INIT | JS_EVENT_AXIS:
+                        std::cout << "Eje " << (int)event.number 
+                                  << " posición inicial: " << event.value << std::endl;
                         break;
                 }
             } else if (bytes < 0 && errno != EAGAIN) {
@@ -107,7 +116,7 @@ int main() {
         }
 
         // Pequeña pausa para no saturar la CPU
-        usleep(100000); // 100ms
+        usleep(16000); // ~60 lecturas por segundo
     }
     
     closeJoystick();
