@@ -1407,19 +1407,16 @@ void handleKeyboardInput(Ground2Air_Config_Packet& config, bool ignoreKeys, bool
     }
     else if (ImGui::IsKeyPressed(ImGuiKey_F) && s_connected_air_device_id != 0)
     {
-        static bool flash_state = false;
-        flash_state = !flash_state; // Toggle the state
-
         // Send flash command
         Ground2Air_Control_Packet packet_to_send;
-        packet_to_send.command = flash_state ? CMD_FLASH : CMD_NONE;
+        packet_to_send.command = CMD_FLASH; // Always send CMD_FLASH, Air Unit will toggle
         packet_to_send.type = Ground2Air_Header::Type::Control;
         packet_to_send.size = sizeof(packet_to_send);
         packet_to_send.airDeviceId = s_connected_air_device_id;
         packet_to_send.gsDeviceId = s_groundstation_config.deviceId;
         packet_to_send.crc = 0;
         packet_to_send.crc = crc8(0, &packet_to_send, sizeof(packet_to_send));
-        LOGI("Sending {} command to air device 0x{:04X}", flash_state ? "CMD_FLASH" : "CMD_NONE", s_connected_air_device_id);
+        LOGI("Sending CMD_FLASH command to air device 0x{:04X}", s_connected_air_device_id);
         s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
     }
 
