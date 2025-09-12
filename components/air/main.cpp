@@ -642,20 +642,6 @@ static void init_camera();
 __attribute__((optimize("Os")))
 IRAM_ATTR static void handle_ground2air_control_packet(Ground2Air_Control_Packet& src)
 {
-    // Handle flash command (previously gpio_control_btn)
-    #ifdef GPIO_CONTROL_PIN
-    if (s_restart_time == 0)
-    {
-        // Only activate GPIO when flash command is received, don't change state for other commands
-        if (src.command == I2C_CMD_FLASH)
-        {
-            // Activate GPIO for flash command
-            set_gpio_control_pin(true);
-            LOG("Flash activated\n");
-        }
-    }
-    #endif
-
     // Handle movement commands and retransmit via I2C
     if (s_restart_time == 0)
     {
@@ -678,7 +664,8 @@ IRAM_ATTR static void handle_ground2air_control_packet(Ground2Air_Control_Packet
                 LOG("Left command sent via I2C\n");
                 break;
             case I2C_CMD_FLASH: // Flash
-                // Already handled above
+                set_gpio_control_pin(!s_gpio_control_state);
+                LOG("Flash toggled to %s\n", s_gpio_control_state ? "ON" : "OFF");
                 break;
             default:
                 LOG("Unknown command received: %d\n", src.command);

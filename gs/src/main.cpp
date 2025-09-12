@@ -1405,6 +1405,23 @@ void handleKeyboardInput(Ground2Air_Config_Packet& config, bool ignoreKeys, bool
         LOGI("Sending CMD_RIGHT command to air device 0x{:04X}", s_connected_air_device_id);
         s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
     }
+    else if (ImGui::IsKeyPressed(ImGuiKey_F) && s_connected_air_device_id != 0)
+    {
+        static bool flash_state = false;
+        flash_state = !flash_state; // Toggle the state
+
+        // Send flash command
+        Ground2Air_Control_Packet packet_to_send;
+        packet_to_send.command = flash_state ? CMD_FLASH : CMD_NONE;
+        packet_to_send.type = Ground2Air_Header::Type::Control;
+        packet_to_send.size = sizeof(packet_to_send);
+        packet_to_send.airDeviceId = s_connected_air_device_id;
+        packet_to_send.gsDeviceId = s_groundstation_config.deviceId;
+        packet_to_send.crc = 0;
+        packet_to_send.crc = crc8(0, &packet_to_send, sizeof(packet_to_send));
+        LOGI("Sending {} command to air device 0x{:04X}", flash_state ? "CMD_FLASH" : "CMD_NONE", s_connected_air_device_id);
+        s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
+    }
 
     if (!ignoreKeys && ImGui::IsKeyPressed(ImGuiKey_LeftArrow))
     {
@@ -1499,56 +1516,11 @@ int run(char* argv[])
         ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
         ImGui::Begin("fullscreen", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoNav  | ImGuiWindowFlags_NoFocusOnAppearing);
         {
-            const float control_panel_width = 220.0f;
             const ImVec2 display_size = ImGui::GetIO().DisplaySize;
-
-            // Right panel for controls
-            ImGui::SetCursorPosX(display_size.x - control_panel_width);
-            ImGui::BeginChild("ControlPane", ImVec2(control_panel_width, 0), true);
-            {
-                // State for the toggle button
-                static bool gpio_pin_state = false;
-
-                ImGui::Text("Controles");
-                ImGui::Separator();
-
-                // Change button text and color based on state
-                const char* button_text = gpio_pin_state ? "GPIO PIN: ON" : "GPIO PIN: OFF";
-                ImVec4 button_color = gpio_pin_state ? ImVec4(0.2f, 0.7f, 0.2f, 1.0f) : ImVec4(0.8f, 0.2f, 0.2f, 1.0f);
-                ImVec4 hover_color = gpio_pin_state ? ImVec4(0.3f, 0.8f, 0.3f, 1.0f) : ImVec4(0.9f, 0.3f, 0.3f, 1.0f);
-                ImVec4 active_color = gpio_pin_state ? ImVec4(0.1f, 0.6f, 0.1f, 1.0f) : ImVec4(0.7f, 0.1f, 0.1f, 1.0f);
-
-                ImGui::PushStyleColor(ImGuiCol_Button, button_color);
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hover_color);
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive, active_color);
-
-                if (ImGui::Button(button_text, ImVec2(-1, 50))) // -1 width = fill available space
-                {
-                    gpio_pin_state = !gpio_pin_state; // Toggle the state
-                    
-                    if ( s_connected_air_device_id != 0 )
-                    {
-                        // Immediately send a control packet with the updated state
-                        Ground2Air_Control_Packet packet_to_send;
-                        packet_to_send.command = gpio_pin_state ? CMD_FLASH : CMD_NONE;
-                        packet_to_send.type = Ground2Air_Header::Type::Control;
-                        packet_to_send.size = sizeof(packet_to_send);
-                        packet_to_send.airDeviceId = s_connected_air_device_id;
-                        packet_to_send.gsDeviceId = s_groundstation_config.deviceId;
-                        packet_to_send.crc = 0;
-                        packet_to_send.crc = crc8(0, &packet_to_send, sizeof(packet_to_send));
-                        LOGI("Sending {} command to air device 0x{:04X}", gpio_pin_state ? "CMD_FLASH" : "CMD_NONE", s_connected_air_device_id);
-                        s_comms.send(&packet_to_send, sizeof(packet_to_send), true);
-                    }
-                }
-
-                ImGui::PopStyleColor(3);
-            }
-            ImGui::EndChild();
 
             // Left panel container
             ImGui::SetCursorPos(ImVec2(0,0));
-            ImGui::BeginChild("LeftPanel", ImVec2(display_size.x - control_panel_width, 0), true);
+            ImGui::BeginChild("LeftPanel", ImVec2(display_size.x, 0), true);
 
             g_osd.draw();
 
