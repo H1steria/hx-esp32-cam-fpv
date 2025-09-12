@@ -1152,11 +1152,12 @@ int run(char* argv[])
 
             // Left panel container
             ImGui::SetCursorPos(ImVec2(0,0));
-            ImGui::BeginChild("LeftPanel", ImVec2(display_size.x - control_panel_width, 0), false);
+            ImGui::BeginChild("LeftPanel", ImVec2(display_size.x - control_panel_width, 0), true);
 
             g_osd.draw();
 
             // Status bar
+            ImGui::SetWindowFontScale(1.0f);
             {
                 //RC RSSI
                 char buf[32];
@@ -1166,7 +1167,7 @@ int run(char* argv[])
                 ImGui::PushStyleColor(ImGuiCol_Button, (ImVec4)ImColor::HSV(0 / 7.0f, 0.0f, 0.6f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, (ImVec4)ImColor::HSV(0 / 7.0f, 0.0f, 0.6f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonActive, (ImVec4)ImColor::HSV(0 / 7.0f, 0.0f, 0.6f));
-                ImGui::Button(buf, ImVec2(128.0f, 0));
+                ImGui::Button(buf);
                 ImGui::PopStyleColor(3);
                 ImGui::PopID();
             }
@@ -1182,7 +1183,7 @@ int run(char* argv[])
                 ImGui::PushStyleColor(ImGuiCol_Button, (ImVec4)ImColor::HSV(0 / 7.0f, 0.0f, 0.6f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, (ImVec4)ImColor::HSV(0 / 7.0f, 0.0f, 0.6f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonActive, (ImVec4)ImColor::HSV(0 / 7.0f, 0.0f, 0.6f));
-                ImGui::Button(buf, ImVec2(113.0f, 0));
+                ImGui::Button(buf);
                 ImGui::PopStyleColor(3);
                 ImGui::PopID();
             }
@@ -1211,7 +1212,7 @@ int run(char* argv[])
                 ImGui::PushStyleColor(ImGuiCol_Button, (ImVec4)ImColor::HSV(0 / 7.0f, s_wifi_ovf ? 0.6f : 0, 0.6f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, (ImVec4)ImColor::HSV(0 / 7.0f, 0.0f, 0.6f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonActive, (ImVec4)ImColor::HSV(0 / 7.0f, 0.0f, 0.6f));
-                ImGui::Button(buf, ImVec2(55.0f, 0));
+                ImGui::Button(buf);
                 ImGui::PopStyleColor(3);
                 ImGui::PopID();
             }
@@ -1225,7 +1226,7 @@ int run(char* argv[])
                 ImGui::PushStyleColor(ImGuiCol_Button, (ImVec4)ImColor::HSV(0 / 7.0f, 0, 0.6f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, (ImVec4)ImColor::HSV(0 / 7.0f, 0.0f, 0.6f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonActive, (ImVec4)ImColor::HSV(0 / 7.0f, 0.0f, 0.6f));
-                ImGui::Button(buf, ImVec2(90.0f, 0));
+                ImGui::Button(buf);
                 ImGui::PopStyleColor(3);
                 ImGui::PopID();
             }
@@ -1246,13 +1247,13 @@ int run(char* argv[])
             {
                 //fps
                 char buf[32];
-                sprintf(buf, "%02d", (int)video_fps);
+                sprintf(buf, "fps:%02d", (int)video_fps);
                 ImGui::SameLine();
                 ImGui::PushID(0);
                 ImGui::PushStyleColor(ImGuiCol_Button, (ImVec4)ImColor::HSV(0 / 7.0f, 0, 0.6f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, (ImVec4)ImColor::HSV(0 / 7.0f, 0.0f, 0.6f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonActive, (ImVec4)ImColor::HSV(0 / 7.0f, 0.0f, 0.6f));
-                ImGui::Button(buf, ImVec2(45.0f, 0));
+                ImGui::Button(buf);
                 ImGui::PopStyleColor(3);
                 ImGui::PopID();
             }
@@ -1404,7 +1405,7 @@ int run(char* argv[])
             // Show data if valid and received within last 10 seconds, otherwise show "N/A"
             char buf[64];
             if (s_dht11_data_valid && (Clock::now() - s_last_dht11_data_tp < std::chrono::seconds(10))) {
-                sprintf(buf, "%.1f°C %.1f%%", s_dht11_temperature, s_dht11_humidity);
+                sprintf(buf, "%.1f°C %.1f%%h", s_dht11_temperature, s_dht11_humidity);
             } else {
                 sprintf(buf, "N/A");
             }
@@ -1413,11 +1414,14 @@ int run(char* argv[])
             ImGui::PushStyleColor(ImGuiCol_Button, (ImVec4)ImColor::HSV(0 / 7.0f, 0, 0.6f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, (ImVec4)ImColor::HSV(0 / 7.0f, 0.0f, 0.6f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, (ImVec4)ImColor::HSV(0 / 7.0f, 0.0f, 0.6f));
-            ImGui::Button(buf, ImVec2(120.0f, 0));
+            ImGui::Button(buf);
             ImGui::PopStyleColor(3);
             ImGui::PopID();
 
-            if ( s_groundstation_config.stats )
+            ImGui::SetWindowFontScale(1.0f);
+            // end Status bar
+
+            if ( s_groundstation_config.stats ) //telemetry menu
             {
                 char overlay[32];
 
@@ -2086,6 +2090,7 @@ int run(char* argv[])
             ImGui::End();
         } //debug window
         
+        // keyboard
         if ( ImGui::IsKeyPressed(ImGuiKey_O) || ImGui::IsKeyPressed(ImGuiKey_MouseMiddle))
         {
             s_debugWindowVisisble = !s_debugWindowVisisble;
@@ -2192,12 +2197,6 @@ int run(char* argv[])
             resetRes |= !found;
         }
 
-        if ( resetRes )
-        {
-            config.camera.resolution = Resolution::SVGA16;
-            saveGround2AirConfig(config);
-        }
-
         if ( !ignoreKeys && ImGui::IsKeyPressed(ImGuiKey_R))
         {
             config.dataChannel.air_record_btn++;
@@ -2211,6 +2210,13 @@ int run(char* argv[])
         if (ImGui::IsKeyPressed(ImGuiKey_Space) || (!ignoreKeys && ImGui::IsKeyPressed(ImGuiKey_Escape)))
         {
             exitApp();
+        }
+        // end keyboard
+
+        if ( resetRes )
+        {
+            config.camera.resolution = Resolution::SVGA16;
+            saveGround2AirConfig(config);
         }
 
         if ( bRestart ) 
@@ -2322,7 +2328,8 @@ std::string exec(const char* cmd)
 {
     std::array<char, 128> buffer;
     std::string result;
-    std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd, "r"), pclose);
+    // std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd, "r"), pclose);
+    std::unique_ptr<FILE, int(*)(FILE*)> pipe(popen(cmd, "r"), pclose);
     if (!pipe) 
     {
         throw std::runtime_error("popen() failed!");
