@@ -3,6 +3,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "esp_err.h"
 #include "driver/i2c.h"
 
@@ -20,8 +21,20 @@ extern int dataIndex;
 // DHT11 data buffer
 extern uint8_t s_dht11_data_buffer[9]; // 4 bytes humidity + 4 bytes temperature + 1 byte valid flag
 
+// Define the structure for an I2C command
+typedef struct {
+    uint8_t command;
+    int8_t val1;
+    int8_t val2;
+} i2c_command_t;
+
+// External declaration for the command queue handle
+extern QueueHandle_t s_i2c_command_queue;
+
 // Function declarations
 esp_err_t init_i2c_slave();
+void i2c_command_queue_init();
+BaseType_t i2c_command_queue_send(i2c_command_t command);
 void i2c_slave_task(void *pvParameter);
 void update_dht11_data_buffer(float humidity, float temperature, bool data_valid);
 

@@ -2,12 +2,17 @@
 #include "esp_log.h"
 #include "driver/gpio.h"
 #include "string.h"
+#include "freertos/queue.h"
+#include "driver/i2c.h"
 
 static const char *TAG = "I2C_SLAVE";
 
 // Buffer para almacenar datos recibidos
 uint8_t receivedData[BUF_SIZE];
 int dataIndex = 0;
+
+// FreeRTOS queue for I2C commands
+QueueHandle_t s_i2c_command_queue;
 
 // DHT11 data buffer
 uint8_t s_dht11_data_buffer[9]; // 4 bytes humidity + 4 bytes temperature + 1 byte valid flag
@@ -33,8 +38,9 @@ esp_err_t init_i2c_slave() {
         return ret;
     }
     
-    // Install driver with larger RX buffer for read operations
-    ret = i2c_driver_install(I2C_SLAVE_PORT, conf.mode, BUF_SIZE, BUF_SIZE, 0);
+    // Install driver with a larger RX buffer for read operations to prevent overflow
+    // The TX buffer can remain BUF_SIZE as the slave typically doesn't send large amounts of data.
+    ret = i2c_driver_install(I2C_SLAVE_PORT, conf.mode, 512, BUF_SIZE, 0); // Corrected i2c_driver_install call (5 arguments)
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Error instalando driver: %s", esp_err_to_name(ret));
         return ret;
@@ -46,6 +52,29 @@ esp_err_t init_i2c_slave() {
     return ESP_OK;
 }
 
+// Function to initialize the I2C command queue
+void i2c_command_queue_init() {
+    s_i2c_command_queue = xQueueCreate(30, sizeof(i2c_command_t)); // Increased queue size to 30 commands
+    if (s_i2c_command_queue == NULL) {
+        ESP_LOGE(TAG, "Failed to create I2C command queue");
+    } else {
+        ESP_LOGI(TAG, "I2C command queue created successfully");
+    }
+}
+
+// Function to send a command to the queue
+BaseType_t i2c_command_queue_send(i2c_command_t command) {
+    if (s_i2c_command_queue == NULL) {
+        ESP_LOGE(TAG, "I2C command queue not initialized");
+        return pdFAIL;
+    }
+    BaseType_t ret = xQueueSend(s_i2c_command_queue, &command, 0); // Don't block if queue is full
+    if (ret != pdPASS) {
+        ESP_LOGW(TAG, "Failed to send command to I2C queue (queue full?)");
+    }
+    return ret;
+}
+
 // Function to update DHT11 data in the buffer for transmission
 void update_dht11_data_buffer(float humidity, float temperature, bool data_valid) {
     // Copy float values as bytes to the buffer
@@ -55,26 +84,4 @@ void update_dht11_data_buffer(float humidity, float temperature, bool data_valid
     
     ESP_LOGI(TAG, "DHT11 data buffer updated - H=%.1f%%, T=%.1f°C, Valid=%d", 
              humidity, temperature, data_valid);
-}
-
-void i2c_slave_task(void *pvParameter) {
-    ESP_LOGI(TAG, "Slave ready to receive data...");
-    
-    while (1) {
-        // Leer datos del master (operación de escritura del master)
-        int size = i2c_slave_read_buffer(I2C_SLAVE_PORT, receivedData, BUF_SIZE, pdMS_TO_TICKS(100));
-        
-        if (size > 0) {
-            ESP_LOGI(TAG, "Datos recibidos (%d bytes): ", size);
-            
-            // Imprimir los datos en formato hexadecimal
-            for (int i = 0; i < size; i++) {
-                ESP_LOGI(TAG, "0x%02X ", receivedData[i]);
-            }
-            
-            ESP_LOGI(TAG, ""); // Nueva línea
-        }
-        
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
 }

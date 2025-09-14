@@ -50,10 +50,11 @@ void Motor::init_pins() {
     // Configure LEDC timer
     ledc_timer_config_t ledc_timer = {
         .speed_mode       = LEDC_MODE,
-        .timer_num        = LEDC_TIMER,
         .duty_resolution  = LEDC_RESOLUTION,
+        .timer_num        = LEDC_TIMER,
         .freq_hz          = LEDC_FREQUENCY,  // Set output frequency at 5 kHz
-        .clk_cfg          = LEDC_AUTO_CLK
+        .clk_cfg          = LEDC_AUTO_CLK,
+        .deconfigure      = false
     };
     ESP_ERROR_CHECK(ledc_timer_config(&ledc_timer));
 
@@ -65,7 +66,9 @@ void Motor::init_pins() {
         .intr_type      = LEDC_INTR_DISABLE,
         .timer_sel      = LEDC_TIMER,
         .duty           = 0, // Set duty to 0%
-        .hpoint         = 0
+        .hpoint         = 0,
+        .sleep_mode     = LEDC_SLEEP_MODE_NO_ALIVE_NO_PD,
+        .flags          = { .output_invert = 0 }
     };
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel_0));
 
@@ -77,7 +80,9 @@ void Motor::init_pins() {
         .intr_type      = LEDC_INTR_DISABLE,
         .timer_sel      = LEDC_TIMER,
         .duty           = 0, // Set duty to 0%
-        .hpoint         = 0
+        .hpoint         = 0,
+        .sleep_mode     = LEDC_SLEEP_MODE_NO_ALIVE_NO_PD,
+        .flags          = { .output_invert = 0 }
     };
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel_1));
     
@@ -112,19 +117,15 @@ void Motor::set_movement(int8_t joystick_x, int8_t joystick_y) {
     // joystick_y controls forward/backward speed
     // joystick_x controls turning (differential speed)
 
-    // Calculate base speed from joystick_y
-    int32_t base_speed = std::abs(joystick_y);
+    // Calculate motor speeds based on joystick X and Y values
+    // joystick_y: -100 (forward) to 100 (backward)
+    // joystick_x: -100 (left) to 100 (right)
 
-    // Calculate turn factor from joystick_x
-    int32_t turn_factor = std::abs(joystick_x);
-
-    if (joystick_y >= 0) { // Forward or turning while moving forward
-        left_motor_speed = base_speed - turn_factor;
-        right_motor_speed = base_speed + turn_factor;
-    } else { // Backward or turning while moving backward
-        left_motor_speed = -base_speed - turn_factor;
-        right_motor_speed = -base_speed + turn_factor;
-    }
+    // For forward movement (joystick_y negative or zero), -joystick_y will be positive or zero.
+    // For backward movement (joystick_y positive), -joystick_y will be negative.
+    // This ensures that the base speed for motors has the correct sign for forward/backward.
+    left_motor_speed = -joystick_y + joystick_x;
+    right_motor_speed = -joystick_y - joystick_x;
 
     // Clamp speeds to -100 to 100
     left_motor_speed = std::max((int32_t)-100, std::min((int32_t)100, left_motor_speed));
@@ -163,6 +164,6 @@ void Motor::set_movement(int8_t joystick_x, int8_t joystick_y) {
     ledc_update_duty(LEDC_MODE, LEDC_CHANNEL_0);
     ledc_update_duty(LEDC_MODE, LEDC_CHANNEL_1);
 
-    ESP_LOGI(TAG, "Set movement: X=%d, Y=%d -> Left Speed=%d (Duty=%lu), Right Speed=%d (Duty=%lu)", 
+    ESP_LOGI(TAG, "Set movement: Raw X=%d, Raw Y=%d -> Left Speed=%d (Duty=%lu), Right Speed=%d (Duty=%lu)", 
              joystick_x, joystick_y, left_motor_speed, left_duty, right_motor_speed, right_duty);
 }
