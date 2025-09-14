@@ -42,10 +42,12 @@ private:
     // Last sent packet state for throttling
     Ground2Air_Control_Packet m_last_sent_control_packet;
     Clock::time_point m_last_control_packet_sent_tp;
+    Clock::time_point m_last_axis_packet_sent_tp; // Last time an axis packet was sent
 
     ControlCallback m_control_callback;
 
     const float JOYSTICK_DEADZONE = 0.30f; // Deadzone applied to normalized float values
     const int JOYSTICK_MAX_VALUE = 32767;
-    const std::chrono::milliseconds PACKET_SEND_INTERVAL = std::chrono::milliseconds(50); // Send every 50ms
+    // PACKET_SEND_INTERVAL is removed as per user's request: "si no cambian, no se transmitira nada sin importar el timpo transcurrido"
+    const std::chrono::milliseconds AXIS_SEND_MIN_INTERVAL = std::chrono::milliseconds(100); // Minimum delay between axis packet sends when values are changing
 };

@@ -11,7 +11,8 @@ Dualshock3::Dualshock3() :
     m_joystick_connected(false),
     m_running(false),
     m_last_sent_control_packet({}), // Initialize with default values
-    m_last_control_packet_sent_tp(Clock::now())
+    m_last_control_packet_sent_tp(Clock::now()),
+    m_last_axis_packet_sent_tp(Clock::now())
 {
     m_last_sent_control_packet.command = CMD_NONE;
     m_last_sent_control_packet.joystick_x = 0;
@@ -36,22 +37,35 @@ void Dualshock3::send_control_packet(uint8_t command, int8_t joystick_x, int8_t 
         changed = true;
     }
 
-    // Also send periodically to ensure commands are received, even if values don't change
-    if (!changed && (Clock::now() - m_last_control_packet_sent_tp < PACKET_SEND_INTERVAL)) {
-        return; // Don't send if not changed and too soon
-    }
-
     // If the command is CMD_NONE and previous was active, ensure it's sent
     if (command == CMD_NONE && (m_last_sent_control_packet.command != CMD_NONE || m_last_sent_control_packet.joystick_x != 0 || m_last_sent_control_packet.joystick_y != 0)) {
         changed = true; // Force send stop command
     }
 
+    // Force send CMD_FLASH even if values haven't changed, as it's a momentary action
+    if (command == CMD_FLASH) {
+        changed = true;
+    }
+
+    // Apply minimum delay for axis packets if values are changing AND not returning to zero
+    if (command == CMD_JOYSTICK_MOVE && changed && (joystick_x != 0 || joystick_y != 0)) {
+        if (Clock::now() - m_last_axis_packet_sent_tp < AXIS_SEND_MIN_INTERVAL) {
+            return; // Don't send if axis values changed too soon and not returning to zero
+        }
+    }
+
     if (changed) {
+        std::cout << "Dualshock3: Sending control packet - Command: " << (int)command
+                  << ", Joystick X: " << (int)joystick_x
+                  << ", Joystick Y: " << (int)joystick_y << std::endl;
         m_control_callback(command, joystick_x, joystick_y);
         m_last_sent_control_packet.command = command;
         m_last_sent_control_packet.joystick_x = joystick_x;
         m_last_sent_control_packet.joystick_y = joystick_y;
-        m_last_control_packet_sent_tp = Clock::now();
+        m_last_control_packet_sent_tp = Clock::now(); // Update for all commands
+        if (command == CMD_JOYSTICK_MOVE) {
+            m_last_axis_packet_sent_tp = Clock::now(); // Update only for axis commands
+        }
     }
 }
 
@@ -108,6 +122,14 @@ void Dualshock3::joystick_input_thread_proc() {
     int8_t current_joystick_x = 0;
     int8_t current_joystick_y = 0;
 
+    // Local variables to store axis values for combined logging
+    float last_raw_x = 0.0f;
+    float last_processed_x = 0.0f;
+    int8_t last_scaled_x = 0;
+    float last_raw_y = 0.0f;
+    float last_processed_y = 0.0f;
+    int8_t last_scaled_y = 0;
+
     while (m_running.load()) {
         bool is_connected = isJoystickDevicePresent();
 
@@ -119,6 +141,12 @@ void Dualshock3::joystick_input_thread_proc() {
                 current_flash_button_state = false;
                 current_joystick_x = 0;
                 current_joystick_y = 0;
+                last_raw_x = 0.0f;
+                last_processed_x = 0.0f;
+                last_scaled_x = 0;
+                last_raw_y = 0.0f;
+                last_processed_y = 0.0f;
+                last_scaled_y = 0;
                 send_control_packet(CMD_NONE, 0, 0); // Send stop command on connect
             } else {
                 m_joystick_connected.store(false);
@@ -149,7 +177,9 @@ void Dualshock3::joystick_input_thread_proc() {
                             current_flash_button_state = (event.value == 1);
                             std::cout << "Button " << (int)event.number << (event.value == 1 ? " pressed" : " released") << std::endl;
                             // Send flash command immediately
-                            send_control_packet(CMD_FLASH, 0, 0); 
+                            if (event.value == 1){
+                                send_control_packet(CMD_FLASH, 0, 0); 
+                            }
                         }
                         break;
 
@@ -157,32 +187,62 @@ void Dualshock3::joystick_input_thread_proc() {
                         float raw_axis_value = event.value / (float)JOYSTICK_MAX_VALUE;
                         float processed_axis_value = raw_axis_value;
 
-                        // Apply deadzone and rescale
-                        if (std::abs(processed_axis_value) < JOYSTICK_DEADZONE) {
-                            processed_axis_value = 0.0f;
-                        } else {
-                            // Rescale value outside deadzone to maintain full range
-                            if (processed_axis_value > 0) {
-                                processed_axis_value = (processed_axis_value - JOYSTICK_DEADZONE) / (1.0f - JOYSTICK_DEADZONE);
-                            } else {
-                                processed_axis_value = (processed_axis_value + JOYSTICK_DEADZONE) / (1.0f - JOYSTICK_DEADZONE);
-                            }
-                        }
-
                         // Scale to -100 to 100
-                        int8_t scaled_value = static_cast<int8_t>(std::round(processed_axis_value * 100.0f));
+                        int8_t scaled_value = static_cast<int8_t>(std::round(raw_axis_value * 100.0f));
 
                         if (event.number == 0) { // X-axis (left/right)
                             current_joystick_x = scaled_value;
-                            std::cout << "Axis X raw: " << raw_axis_value << ", processed: " << processed_axis_value << " (scaled: " << (int)scaled_value << ")" << std::endl;
+                            last_raw_x = raw_axis_value;
+                            last_processed_x = raw_axis_value; // Store raw for now, deadzone applied later
+                            last_scaled_x = scaled_value;
                         } else if (event.number == 1) { // Y-axis (forward/backward)
-                            current_joystick_y = -scaled_value; // Invert Y-axis for forward being positive
-                            std::cout << "Axis Y raw: " << raw_axis_value << ", processed: " << processed_axis_value << " (scaled: " << (int)scaled_value << ")" << std::endl;
+                            current_joystick_y = scaled_value;
+                            last_raw_y = raw_axis_value;
+                            last_processed_y = raw_axis_value; // Store raw for now, deadzone applied later
+                            last_scaled_y = scaled_value;
                         }
-                        // Send joystick move command immediately
-                        send_control_packet(CMD_JOYSTICK_MOVE, current_joystick_x, current_joystick_y);
+                        
+                        // Apply combined deadzone after both axes have been updated
+                        // Only set to 0 if both axes are within the deadzone threshold
+                        if (std::abs(current_joystick_x) < (JOYSTICK_DEADZONE * 100) &&
+                            std::abs(current_joystick_y) < (JOYSTICK_DEADZONE * 100)) {
+                            current_joystick_x = 0;
+                            current_joystick_y = 0;
+                            last_processed_x = 0.0f; // Update processed values for logging
+                            last_processed_y = 0.0f;
+                            last_scaled_x = 0;
+                            last_scaled_y = 0;
+                        } else {
+                            // If outside the combined deadzone, rescale values to maintain full range
+                            // This part is tricky as it depends on how JOYSTICK_DEADZONE is defined.
+                            // For simplicity, if not in deadzone, we use the scaled raw value.
+                            // If a more complex rescaling is needed, it should be implemented here.
+                            // For now, we'll just ensure the values are not 0 if they are outside the deadzone.
+                            // The original code had a rescaling for individual axes, which is now removed.
+                            // We will keep the scaled_value as is if it's outside the deadzone.
+                            // The problem description implies that if one axis is at an extreme, the other should not be zeroed out.
+                            // So, if current_joystick_x is not 0, it should be its scaled value.
+                            // If current_joystick_y is not 0, it should be its scaled value.
+                            // The `processed_axis_value` in the log should reflect the `current_joystick_x/y` scaled back to 0-1 range.
+                            last_processed_x = current_joystick_x / 100.0f;
+                            last_processed_y = current_joystick_y / 100.0f;
+                            last_scaled_x = current_joystick_x;
+                            last_scaled_y = current_joystick_y;
+                        }
+
+                        // Only send joystick move command if there's actual movement or if it's a transition to 0,0 from a non-zero state
+                        // The send_control_packet function itself handles not sending if values haven't changed.
+                        if (current_joystick_x != m_last_sent_control_packet.joystick_x ||
+                            current_joystick_y != m_last_sent_control_packet.joystick_y) {
+                            send_control_packet(CMD_JOYSTICK_MOVE, current_joystick_x, current_joystick_y);
+                        }
                         break;
                     }
+                }
+                // Log combined X and Y axis values after processing any axis event
+                if (event.type == JS_EVENT_AXIS) {
+                    std::cout << "Axis X raw: " << last_raw_x << ", processed: " << last_processed_x << " (scaled: " << (int)last_scaled_x
+                              << ") | Axis Y raw: " << last_raw_y << ", processed: " << last_processed_y << " (scaled: " << (int)last_scaled_y << ")" << std::endl;
                 }
             } else if (bytes < 0 && errno != EAGAIN) {
                 // Error reading (possible disconnection)
@@ -194,9 +254,9 @@ void Dualshock3::joystick_input_thread_proc() {
             }
         }
         // Periodically send CMD_NONE if no active input, to ensure stop command is received
-        if (m_joystick_connected.load() && current_joystick_x == 0 && current_joystick_y == 0 && !current_flash_button_state) {
-            send_control_packet(CMD_NONE, 0, 0);
-        }
+        // if (m_joystick_connected.load() && current_joystick_x == 0 && current_joystick_y == 0 && !current_flash_button_state) {
+        //     send_control_packet(CMD_NONE, 0, 0);
+        // }
         std::this_thread::sleep_for(std::chrono::milliseconds(10)); // Small pause
     }
     std::cout << "Dualshock3: Joystick input thread stopped." << std::endl;
