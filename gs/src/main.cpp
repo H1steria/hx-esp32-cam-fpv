@@ -604,8 +604,8 @@ static void comms_thread_proc()
 
             // Log the FEC packet header and the Air2Ground_Header type for debugging
             LOGD("Received FEC packet. Block: %u, Packet: %u, FEC Payload Size: %u. Air2Ground Type: %u, Size: %u\n",
-                 fec_packet_header.block_index, fec_packet_header.packet_index, fec_packet_header.size,
-                 (uint8_t)air2ground_header.type, air2ground_header.size);
+                 (unsigned int)fec_packet_header.block_index, (unsigned int)fec_packet_header.packet_index, (unsigned int)fec_packet_header.size,
+                 (unsigned int)air2ground_header.type, (unsigned int)air2ground_header.size);
 
 /*
             if ( air2ground_header.version != PACKET_VERSION )

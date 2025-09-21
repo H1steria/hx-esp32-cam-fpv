@@ -23,15 +23,15 @@ extern float s_dht11_humidity;
 extern float s_dht11_temperature;
 extern bool s_dht11_data_valid;
 
-// Queue for report packets (now will contain FEC-ready payloads)
-QueueHandle_t s_report_packet_queue;
+// Queue for report packets (no longer needed as report packets go through s_wlan_outgoing_queue)
+// QueueHandle_t s_report_packet_queue; // This declaration is now removed
 
 extern Ground2Air_Config_Packet s_ground2air_config_packet;
 extern uint16_t s_air_device_id;
 extern uint16_t s_connected_gs_device_id;
 
-// Extern declaration for the main outgoing WLAN queue
-extern QueueHandle_t s_wlan_outgoing_queue;
+// Extern declaration for the main outgoing WLAN queue (custom Queue class)
+extern Queue s_wlan_outgoing_queue;
 
 void send_air2ground_report_packet()
 {
@@ -70,36 +70,21 @@ void send_air2ground_report_packet()
     memcpy(fec_payload_buffer + sizeof(Packet_Header), &report_packet, sizeof(Air2Ground_Report_Packet));
 
     // Send to the main outgoing WLAN queue for FEC encoding and transmission
-    if (s_wlan_outgoing_queue != NULL) {
-        // We need to send the entire FEC payload (Packet_Header + Air2Ground_Report_Packet)
-        // as a single item to the outgoing queue.
-        // The queue expects Wlan_Outgoing_Packet, so we need to create one.
-        Wlan_Outgoing_Packet outgoing_wlan_packet;
-        // Allocate memory for the packet data (802.11 header + FEC payload)
-        // The 802.11 header will be added by the wifi_tx_task
-        outgoing_wlan_packet.ptr = (uint8_t*)heap_caps_malloc(WLAN_MAX_PAYLOAD_SIZE, MALLOC_CAP_DMA);
-        if (outgoing_wlan_packet.ptr == NULL) {
-            LOG("Failed to allocate memory for outgoing report packet\n");
-            return;
-        }
-        // The payload_ptr points to where the FEC payload starts (after 802.11 header)
-        outgoing_wlan_packet.payload_ptr = outgoing_wlan_packet.ptr; // No 802.11 header here yet
-        outgoing_wlan_packet.size = sizeof(Packet_Header) + sizeof(Air2Ground_Report_Packet);
-        outgoing_wlan_packet.offset = 0; // Not used for this type of packet
+    // Use the custom Queue's writing functions
+    Wlan_Outgoing_Packet outgoing_wlan_packet;
+    // The size of the data to write into the queue is the FEC payload size
+    size_t data_to_enqueue_size = sizeof(Packet_Header) + sizeof(Air2Ground_Report_Packet);
 
-        // Copy the FEC payload into the allocated buffer
-        memcpy(outgoing_wlan_packet.payload_ptr, fec_payload_buffer, outgoing_wlan_packet.size);
-
-        if (xQueueSend(s_wlan_outgoing_queue, &outgoing_wlan_packet, pdMS_TO_TICKS(10)) != pdPASS) {
-            LOG("Failed to enqueue FEC-ready report packet\n");
-            heap_caps_free(outgoing_wlan_packet.ptr); // Free memory if enqueue fails
-        } else {
-            LOG("FEC-ready report packet enqueued. AirID: %d, GsID: %d, Temp: %.2f, Hum: %.2f, Valid: %d\n",
-                report_packet.airDeviceId, report_packet.gsDeviceId, report_packet.temperature,
-                report_packet.humidity, (int)report_packet.data_valid);
-        }
+    // Start writing to the WLAN outgoing queue
+    if (start_writing_wlan_outgoing_packet(outgoing_wlan_packet, data_to_enqueue_size)) {
+        // Copy the FEC payload into the allocated buffer provided by start_writing
+        memcpy(outgoing_wlan_packet.payload_ptr, fec_payload_buffer, data_to_enqueue_size);
+        end_writing_wlan_outgoing_packet(outgoing_wlan_packet);
+        LOG("FEC-ready report packet enqueued. AirID: %d, GsID: %d, Temp: %.2f, Hum: %.2f, Valid: %d\n",
+            report_packet.airDeviceId, report_packet.gsDeviceId, report_packet.temperature,
+            report_packet.humidity, (int)report_packet.data_valid);
     } else {
-        LOG("WLAN outgoing queue not initialized\n");
+        LOG("Failed to enqueue FEC-ready report packet (WLAN outgoing queue full or not initialized)\n");
     }
 }
 
