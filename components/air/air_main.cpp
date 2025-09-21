@@ -37,7 +37,7 @@
 #include "structures.h"
 #include "crc.h"
 #include "driver/gpio.h"
-#include "main.h"
+#include "air_main.h"
 #include "queue.h"
 #include "circular_buffer.h"
 
@@ -55,13 +55,22 @@
 
 #include "hx_mavlink_parser.h"
 
-#include "i2c.h"
+#include "spi_master.h"
 #include "report.h"
 
 static int s_stats_last_tp = -10000;
 static int s_last_osd_packet_tp = -10000;
 static int s_last_config_packet_tp = -10000;
-// static int64_t s_last_report_packet_tp = -5000;
+static int64_t s_last_report_packet_tp = -5000;
+
+// Global variables for DHT11 data (declared extern in spi_master.h)
+float s_dht11_humidity = 0.0f;
+float s_dht11_temperature = 0.0f;
+bool s_dht11_data_valid = false;
+
+// Extern declarations for SPI master components (already in spi_master.h)
+// extern spi_device_handle_t spi_handle;
+// extern void return_transaction_to_pool(spi_master_transaction_t* trans_obj);
 
 #define MJPEG_PATTERN_SIZE 512 
 
@@ -642,25 +651,31 @@ static void init_camera();
 __attribute__((optimize("Os")))
 IRAM_ATTR static void handle_ground2air_control_packet(Ground2Air_Control_Packet& src)
 {
-    // Handle movement commands and retransmit via I2C
+    // Handle movement commands and retransmit via SPI
     if (s_restart_time == 0)
     {
+        air_spi_command_t spi_cmd;
+        spi_cmd.command = src.command;
+        spi_cmd.val1 = src.joystick_x;
+        spi_cmd.val2 = src.joystick_y;
+
         switch (src.command)
         {
-            case I2C_CMD_FLASH: // Flash
+            case SPI_CMD_FLASH: // Flash
                 set_gpio_control_pin(!s_gpio_control_state);
                 LOG("Flash toggled to %s\n", s_gpio_control_state ? "ON" : "OFF");
                 break;
-            case I2C_CMD_JOYSTICK_MOVE: // Joystick movement
-                send_i2c_command(I2C_CMD_JOYSTICK_MOVE, src.joystick_x, src.joystick_y);
-                LOG("Joystick move command sent via I2C: x=%d, y=%d\n", src.joystick_x, src.joystick_y);
+            case SPI_CMD_JOYSTICK_MOVE: // Joystick movement
+                spi_master_send_control_command(&spi_cmd);
+                LOG("Joystick move command sent via SPI: x=%d, y=%d\n", src.joystick_x, src.joystick_y);
                 break;
-            case I2C_CMD_NONE: // Stop all movement
-                send_i2c_command(I2C_CMD_NONE, 0, 0);
-                LOG("Stop command sent via I2C\n");
+            case SPI_CMD_NONE: // Stop all movement
+                spi_master_send_control_command(&spi_cmd);
+                LOG("Stop command sent via SPI\n");
                 break;
             default:
                 LOG("Unknown command received: %d\n", src.command);
+                spi_master_send_control_command(&spi_cmd); // Send unknown commands too, slave can handle
                 break;
         }
     }
@@ -835,68 +850,28 @@ IRAM_ATTR void send_air2ground_config_packet()
         s_stats.wlan_error_count++;
     }
 }
+
 //=============================================================================================
 //=============================================================================================
-// IRAM_ATTR void send_air2ground_report_packet()
-// {
-//     uint8_t* packet_data = s_fec_encoder.get_encode_packet_data(true);
-//     if( !packet_data )
-//     {
-//         LOG("no data buf!\n");
-//         return;
-//     }
+// New FreeRTOS task for DHT11 SPI reading and report sending
+void dht11_spi_read_task(void* pvParameters) {
+    while (true) {
+        // Only proceed if 5 seconds have passed since the last report packet was sent
+        if (millis() - s_last_report_packet_tp > 5000) {
+            // Queue the DHT11 read command. The result will be processed asynchronously by spi_master_task.
+            spi_master_send_read_dht11_command();
+            
+            // Always attempt to send the report packet if connected, regardless of read success.
+            // The global s_dht11_data_valid flag will indicate if the data is fresh/valid.
+            if (s_connected_gs_device_id != 0) {
+                send_air2ground_report_packet();
+            }
+            s_last_report_packet_tp = millis(); // Reset timer after queuing read and sending report
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000)); // Check every second, but only act every 5 seconds
+    }
+}
 
-//     Air2Ground_Report_Packet& packet = *(Air2Ground_Report_Packet*)packet_data;
-//     packet.type = Air2Ground_Header::Type::Report; // Using Report type for report packets
-//     packet.size = sizeof(Air2Ground_Report_Packet);
-//     packet.pong = s_ground2air_config_packet.ping;
-//     packet.version = PACKET_VERSION;
-//     packet.airDeviceId = s_air_device_id;
-//     packet.gsDeviceId = s_connected_gs_device_id;
-//     packet.crc = 0;
-
-//     // Fill in DHT11 data
-//     packet.temperature = s_dht11_temperature;
-//     packet.humidity = s_dht11_humidity;
-//     packet.data_valid = s_dht11_data_valid ? 1 : 0;
-
-//     packet.crc = crc8(0, &packet, sizeof(Air2Ground_Report_Packet));
-
-//     if (!s_fec_encoder.flush_encode_packet(true))
-//     {
-//         LOG("Fec codec busy\n");
-//         s_stats.wlan_error_count++;
-//     }
-// }
-
-// IRAM_ATTR void handle_dht11_read_and_send()
-// {
-//     // Only proceed if 5 seconds have passed since the last report packet was sent
-//     if (millis() - s_last_report_packet_tp > 5000) {
-//         float dht11_humidity_local = 0.0;
-//         float dht11_temperature_local = 0.0;
-        
-//         esp_err_t result = read_dht11_data(&dht11_humidity_local, &dht11_temperature_local);
-//         if (result == ESP_OK) {
-//             s_dht11_humidity = dht11_humidity_local;
-//             s_dht11_temperature = dht11_temperature_local;
-//             s_dht11_data_valid = true;
-//             LOG("DHT11 data - Humidity: %d%%, Temperature: %d°C\n", (int)dht11_humidity_local, (int)dht11_temperature_local);
-//         } else {
-//             s_dht11_data_valid = false;
-//             LOG("Failed to read DHT11 data: %s\n", esp_err_to_name(result));
-//         }
-
-//         // Always attempt to send the report packet if connected, regardless of read success
-//         // The data_valid flag in the packet will indicate if the data is fresh/valid
-//         if (s_connected_gs_device_id != 0) {
-//             send_air2ground_report_packet();
-//         }
-//         s_last_report_packet_tp = millis(); // Reset timer after a full cycle (read attempt + send attempt)
-//     }
-// }
-//=============================================================================================
-//=============================================================================================
 constexpr size_t MAX_VIDEO_DATA_PAYLOAD_SIZE = AIR2GROUND_MTU - sizeof(Air2Ground_Video_Packet);
 
 static const int WifiRateBandwidth[] = 
@@ -1419,9 +1394,6 @@ IRAM_ATTR size_t camera_data_available(void * cam_obj,const uint8_t* data, size_
                         s_osdUpdateCounter++;
                     }
 
-                    // Call the new DHT11 logic here
-                    handle_dht11_read_and_send();
-
                     int64_t dt = millis() - s_last_config_packet_tp;
                     if ( dt > 500 ) 
                     {
@@ -1632,7 +1604,11 @@ extern "C" void app_main()
     heap_caps_print_heap_info(MALLOC_CAP_EXEC);
 
     initialize_gpio_control_pin();
-    initialize_i2c();
+    esp_err_t spi_init_res = spi_master_init(); // Initialize SPI Master
+    if (spi_init_res != ESP_OK) {
+        LOG("Failed to initialize SPI Master: %s\n", esp_err_to_name(spi_init_res));
+        while(1) { vTaskDelay(1000 / portTICK_PERIOD_MS); } // Halt if SPI fails
+    }
 
 #ifdef INIT_UART_0
     printf("Init UART0...\n");
@@ -1683,6 +1659,13 @@ extern "C" void app_main()
     LOG("WIFI channel: %d\n", s_ground2air_config_packet.dataChannel.wifi_channel );
 
     // temperature_sensor_init();
+
+    // Create DHT11 SPI read task with a lower priority
+    if (xTaskCreate(dht11_spi_read_task, "dht11_spi_read_task", 4096, NULL, 1, NULL) != pdPASS) {
+        LOG("Failed to create DHT11 SPI read task\n");
+    } else {
+        LOG("DHT11 SPI read task created successfully\n");
+    }
 
     s_initialized = true;
 

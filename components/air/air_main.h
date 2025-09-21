@@ -16,24 +16,24 @@
 #define GPIO_CONTROL_PIN GPIO_NUM_4
 
 // I2C Pin Definitions
-#define I2C_SDA_PIN GPIO_NUM_2
-#define I2C_SCL_PIN GPIO_NUM_14
+// #define I2C_SDA_PIN GPIO_NUM_2
+// #define I2C_SCL_PIN GPIO_NUM_14
 
 // I2C variables
-#define I2C_MASTER_NUM I2C_NUM_0   // I2C port number for master dev
-#define I2C_MASTER_FREQ_HZ 400000  // I2C master clock frequency (400KHz for faster communication)
-#define I2C_MASTER_TX_BUF_DISABLE 0  // I2C master doesn't need buffer
-#define I2C_MASTER_RX_BUF_DISABLE 0  // I2C master doesn't need buffer
-#define I2C_SLAVE_ADDR 0x08        // I2C slave device address
+// #define I2C_MASTER_NUM I2C_NUM_0   // I2C port number for master dev
+// #define I2C_MASTER_FREQ_HZ 3400000  // I2C master clock frequency (400KHz for faster communication)
+// #define I2C_MASTER_TX_BUF_DISABLE 0  // I2C master doesn't need buffer
+// #define I2C_MASTER_RX_BUF_DISABLE 0  // I2C master doesn't need buffer
+// #define I2C_SLAVE_ADDR 0x08        // I2C slave device address
 
 // I2C Command Definitions
-#define I2C_CMD_NONE 0
-#define I2C_CMD_FORWARD 1
-#define I2C_CMD_BACKWARD 2
-#define I2C_CMD_RIGHT 3
-#define I2C_CMD_LEFT 4
-#define I2C_CMD_FLASH 5
-#define I2C_CMD_JOYSTICK_MOVE 6
+#define SPI_CMD_NONE 0
+// #define I2C_CMD_FORWARD 1
+// #define I2C_CMD_BACKWARD 2
+// #define I2C_CMD_RIGHT 3
+// #define I2C_CMD_LEFT 4
+#define SPI_CMD_FLASH 5
+#define SPI_CMD_JOYSTICK_MOVE 6
 
 #define UART0_BAUDRATE 115200
 

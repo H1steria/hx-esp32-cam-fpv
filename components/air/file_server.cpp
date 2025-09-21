@@ -26,7 +26,7 @@
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 
-#include "main.h"
+#include "air_main.h"
 #include "nvs_args.h"
 #include "packets.h"
 #include "fec.h"

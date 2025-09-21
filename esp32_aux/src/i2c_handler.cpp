@@ -27,7 +27,7 @@ esp_err_t init_i2c_slave() {
         .slave = {
             .addr_10bit_en = 0,
             .slave_addr = SLAVE_ADDRESS,
-            .maximum_speed = 400000
+            .maximum_speed = 3400000
         },
         .clk_flags = 0
     };

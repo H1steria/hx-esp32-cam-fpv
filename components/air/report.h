@@ -3,14 +3,18 @@
 
 #include "esp_err.h"
 #include "packets.h" // For Air2Ground_Report_Packet
+#include "freertos/queue.h" // Include FreeRTOS queue header
 
 #ifdef __cplusplus
 extern "C" {
+
+// Declare the new queue for report packets
+extern QueueHandle_t s_report_packet_queue;
+extern void report_packet_send_task(void* pvParameters); // Declare the new task
+
 #endif
 
-esp_err_t read_dht11_data(float* humidity, float* temperature);
 void send_air2ground_report_packet();
-void handle_dht11_read_and_send();
 
 extern uint64_t millis();
 

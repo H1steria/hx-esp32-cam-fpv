@@ -582,8 +582,30 @@ static void comms_thread_proc()
                 break;
             }
 
-            Air2Ground_Header& air2ground_header = *(Air2Ground_Header*)rx_data.data.data();
-            uint32_t packet_size = air2ground_header.size;
+            // The received data from Comms::receive will now contain:
+            // [Packet_Header] [Air2Ground_Header (base of Report/Video/OSD)] [Payload...]
+            // So, first extract Packet_Header
+            if (rx_data.size < sizeof(Packet_Header)) {
+                LOGE("Received packet too small to contain Packet_Header. Size: %zu\n", rx_data.size);
+                break;
+            }
+            Packet_Header& fec_packet_header = *(Packet_Header*)rx_data.data.data();
+            
+            // Now, the actual application-level header (Air2Ground_Header) starts after Packet_Header
+            uint8_t* app_payload_ptr = rx_data.data.data() + sizeof(Packet_Header);
+            size_t app_payload_size = rx_data.size - sizeof(Packet_Header);
+
+            if (app_payload_size < sizeof(Air2Ground_Header)) {
+                LOGE("Received packet payload too small to contain Air2Ground_Header. Size: %zu\n", app_payload_size);
+                break;
+            }
+            Air2Ground_Header& air2ground_header = *(Air2Ground_Header*)app_payload_ptr;
+            uint32_t packet_size = air2ground_header.size; // This size is the size of the Air2Ground_X_Packet, not the FEC payload size
+
+            // Log the FEC packet header and the Air2Ground_Header type for debugging
+            LOGD("Received FEC packet. Block: %u, Packet: %u, FEC Payload Size: %u. Air2Ground Type: %u, Size: %u\n",
+                 fec_packet_header.block_index, fec_packet_header.packet_index, fec_packet_header.size,
+                 (uint8_t)air2ground_header.type, air2ground_header.size);
 
 /*
             if ( air2ground_header.version != PACKET_VERSION )
@@ -612,7 +634,8 @@ static void comms_thread_proc()
 
                     //accept config from camera
                     std::lock_guard<std::mutex> lg(s_ground2air_config_packet_mutex);
-                    Air2Ground_Config_Packet* airConfig = (Air2Ground_Config_Packet*)rx_data.data.data();
+                    // The Air2Ground_Config_Packet is now after the Packet_Header
+                    Air2Ground_Config_Packet* airConfig = (Air2Ground_Config_Packet*)app_payload_ptr;
                     s_ground2air_config_packet.dataChannel = airConfig->dataChannel;
                     s_ground2air_config_packet.camera = airConfig->camera;
                     s_accept_config_packet = true;
@@ -644,22 +667,23 @@ static void comms_thread_proc()
             }
             else if (air2ground_header.type == Air2Ground_Header::Type::Video)
             {
-                if (packet_size > rx_data.size)
+                // The Air2Ground_Video_Packet is now after the Packet_Header
+                if (app_payload_size < sizeof(Air2Ground_Video_Packet))
                 {
-                    LOGE("Video frame {}: data too big: {} > {}", video_frame_index, packet_size, rx_data.size);
+                    LOGE("Video frame {}: data too small after Packet_Header: {} > {}", video_frame_index, app_payload_size, sizeof(Air2Ground_Video_Packet));
                     break;
                 }
-                if (packet_size < sizeof(Air2Ground_Video_Packet))
+                if (packet_size > app_payload_size)
                 {
-                    LOGE("Video frame {}: data too small: {} > {}", video_frame_index, packet_size, sizeof(Air2Ground_Video_Packet));
+                    LOGE("Video frame {}: data too big: {} > {}", video_frame_index, packet_size, app_payload_size);
                     break;
                 }
 
                 size_t payload_size = packet_size - sizeof(Air2Ground_Video_Packet);
-                Air2Ground_Video_Packet& air2ground_video_packet = *(Air2Ground_Video_Packet*)rx_data.data.data();
+                Air2Ground_Video_Packet& air2ground_video_packet = *(Air2Ground_Video_Packet*)app_payload_ptr;
                 uint8_t crc = air2ground_video_packet.crc;
                 air2ground_video_packet.crc = 0;
-                uint8_t computed_crc = crc8(0, rx_data.data.data(), sizeof(Air2Ground_Video_Packet));
+                uint8_t computed_crc = crc8(0, app_payload_ptr, sizeof(Air2Ground_Video_Packet));
                 if (crc != computed_crc)
                 {
                     LOGE("Video frame {}, {} {}: crc mismatch: {} != {}", air2ground_video_packet.frame_index, (int)air2ground_video_packet.part_index, payload_size, crc, computed_crc);
@@ -726,7 +750,7 @@ static void comms_thread_proc()
                     video_next_part_index++;
                     size_t offset = video_frame.size();
                     video_frame.resize(offset + payload_size);
-                    memcpy(video_frame.data() + offset, rx_data.data.data() + sizeof(Air2Ground_Video_Packet), payload_size);
+                    memcpy(video_frame.data() + offset, app_payload_ptr + sizeof(Air2Ground_Video_Packet), payload_size);
 
                     if (air2ground_video_packet.last_part != 0)
                     {
@@ -814,21 +838,22 @@ static void comms_thread_proc()
 
             else if (air2ground_header.type == Air2Ground_Header::Type::OSD)
             {
-                if (packet_size > rx_data.size)
+                // The Air2Ground_OSD_Packet is now after the Packet_Header
+                if (app_payload_size < sizeof(Air2Ground_OSD_Packet))
                 {
-                    LOGE("OSD frame: data too big: {} > {}", packet_size, rx_data.size);
+                    LOGE("OSD frame: data too small after Packet_Header: {} > {}", app_payload_size, sizeof(Air2Ground_OSD_Packet));
                     break;
                 }
-                if (packet_size < (sizeof(Air2Ground_OSD_Packet)))
+                if (packet_size > app_payload_size)
                 {
-                    LOGE("OSD frame: data too small: {} > {}", packet_size, sizeof(Air2Ground_OSD_Packet));
+                    LOGE("OSD frame: data too big: {} > {}", packet_size, app_payload_size);
                     break;
                 }
 
-                Air2Ground_OSD_Packet& air2ground_osd_packet = *(Air2Ground_OSD_Packet*)rx_data.data.data();
+                Air2Ground_OSD_Packet& air2ground_osd_packet = *(Air2Ground_OSD_Packet*)app_payload_ptr;
                 uint8_t crc = air2ground_osd_packet.crc;
                 air2ground_osd_packet.crc = 0;
-                uint8_t computed_crc = crc8(0, rx_data.data.data(), sizeof(Air2Ground_OSD_Packet));
+                uint8_t computed_crc = crc8(0, app_payload_ptr, sizeof(Air2Ground_OSD_Packet));
                 if (crc != computed_crc)
                 {
                     LOGE("OSD frame: crc mismatch: {} != {}", crc, computed_crc);
@@ -861,21 +886,22 @@ static void comms_thread_proc()
             else if (air2ground_header.type == Air2Ground_Header::Type::Report)
             {
                 // Handle Report packets (DHT11 data)
-                if (packet_size > rx_data.size)
+                // The Air2Ground_Report_Packet is now after the Packet_Header
+                if (app_payload_size < sizeof(Air2Ground_Report_Packet))
                 {
-                    LOGE("Report frame: data too big: {} > {}", packet_size, rx_data.size);
+                    LOGE("Report frame: data too small after Packet_Header: {} > {}", app_payload_size, sizeof(Air2Ground_Report_Packet));
                     break;
                 }
-                if (packet_size < sizeof(Air2Ground_Report_Packet))
+                if (packet_size > app_payload_size)
                 {
-                    LOGE("Report frame: data too small: {} > {}", packet_size, sizeof(Air2Ground_Report_Packet));
+                    LOGE("Report frame: data too big: {} > {}", packet_size, app_payload_size);
                     break;
                 }
 
-                Air2Ground_Report_Packet& air2ground_report_packet = *(Air2Ground_Report_Packet*)rx_data.data.data();
+                Air2Ground_Report_Packet& air2ground_report_packet = *(Air2Ground_Report_Packet*)app_payload_ptr;
                 uint8_t crc = air2ground_report_packet.crc;
                 air2ground_report_packet.crc = 0;
-                uint8_t computed_crc = crc8(0, rx_data.data.data(), sizeof(Air2Ground_Report_Packet));
+                uint8_t computed_crc = crc8(0, app_payload_ptr, sizeof(Air2Ground_Report_Packet));
                 if (crc != computed_crc)
                 {
                     LOGE("Report frame: crc mismatch: {} != {}", crc, computed_crc);
