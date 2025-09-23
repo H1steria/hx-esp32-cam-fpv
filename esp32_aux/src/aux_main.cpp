@@ -107,22 +107,32 @@ extern "C" void app_main() {
         
         if (size > 0) {
             ESP_LOGI(TAG, "Received data (%d bytes): ", size);
-            
-            i2c_command_t cmd;
-            cmd.command = receivedData[0];
-            cmd.val1 = 0;
-            cmd.val2 = 0;
+            int current_index = 0;
+            while (current_index < size) {
+                i2c_command_t cmd;
+                cmd.command = receivedData[current_index];
+                cmd.val1 = 0;
+                cmd.val2 = 0;
+                current_index++; // Move past the command byte
 
-            if (cmd.command == I2C_CMD_JOYSTICK_MOVE && size >= 3) {
-                cmd.val1 = receivedData[1];
-                cmd.val2 = receivedData[2];
-                ESP_LOGI(TAG, "Received Joystick move command: x=%d, y=%d", cmd.val1, cmd.val2);
-            } else {
-                ESP_LOGI(TAG, "Received command: 0x%02X", cmd.command);
+                if (cmd.command == I2C_CMD_JOYSTICK_MOVE) {
+                    if (current_index + 1 < size) { // Check if there are enough bytes for val1 and val2
+                        cmd.val1 = receivedData[current_index];
+                        cmd.val2 = receivedData[current_index + 1];
+                        current_index += 2; // Move past val1 and val2
+                        ESP_LOGI(TAG, "Received Joystick move command: x=%d, y=%d", cmd.val1, cmd.val2);
+                    } else {
+                        ESP_LOGW(TAG, "Incomplete Joystick move command received. Size: %d, current_index: %d", size, current_index - 1);
+                        // Handle error: incomplete command, break or skip
+                        break; 
+                    }
+                } else {
+                    ESP_LOGI(TAG, "Received command: 0x%02X", cmd.command);
+                }
+                
+                // Send command to the queue
+                i2c_command_queue_send(cmd);
             }
-            
-            // Send command to the queue
-            i2c_command_queue_send(cmd);
         } else {
             taskYIELD(); // Yield CPU if no data received to prevent watchdog timeout
         }

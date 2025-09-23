@@ -11,7 +11,7 @@
 #define IRAM_ATTR
 #endif
 
-#include "main.h"
+#include "air_main.h"
 
 #ifdef UART_MSP_OSD
 

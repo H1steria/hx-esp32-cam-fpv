@@ -4,7 +4,7 @@
 #include "esp_err.h"
 #include "driver/i2c.h"
 #include "driver/gpio.h"
-#include "main.h" // For I2C_SLAVE_ADDR, I2C_CMD_FORWARD, etc.
+#include "air_main.h" // For I2C_SLAVE_ADDR, I2C_CMD_FORWARD, etc.
 
 #ifdef __cplusplus
 extern "C" {

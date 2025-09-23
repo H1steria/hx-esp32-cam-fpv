@@ -1,5 +1,5 @@
 set(srcs dummy.cpp 
-  ../../components/air/main.cpp 
+  ../../components/air/air_main.cpp 
   ../../components/air/file_server.cpp 
   ../../components/air/nvs_args.cpp 
   ../../components/air/queue.cpp 

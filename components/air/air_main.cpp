@@ -37,7 +37,7 @@
 #include "structures.h"
 #include "crc.h"
 #include "driver/gpio.h"
-#include "main.h"
+#include "air_main.h"
 #include "queue.h"
 #include "circular_buffer.h"
 

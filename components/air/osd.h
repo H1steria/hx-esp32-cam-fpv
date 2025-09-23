@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 #include "packets.h"
-#include "main.h"
+#include "air_main.h"
 
 
 #ifdef ESP_PLATFORM
