@@ -1,0 +1,14 @@
+dependencias:
+sudo apt install aircrack-ng
+sudo git submodule update --init --recursive --depth 1
+sudo apt install libsdl2-dev
+sudo apt install libpcap-dev
+sudo apt install libturbojpeg0-dev
+sudo apt-get install libfreetype6-dev
+
+
+sudo airmon-ng start wlan1
+
+sudo ./gs -rx wlan1mon -tx wlan1mon -fullscreen 0 -sm 1
+
+seleccionar el canal wifi correcto en la gs en caso de que no se conecte automaticamente

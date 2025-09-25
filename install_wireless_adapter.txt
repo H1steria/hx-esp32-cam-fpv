@@ -1,0 +1,11 @@
+git clone https://github.com/lwfinger/rtw88
+
+cd rtw88
+
+make
+
+sudo make install
+
+sudo make install_fw
+
+sudo cp rtw88.conf /etc/modprobe.d/
